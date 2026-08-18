@@ -23,6 +23,9 @@
           "ursi.debug"
           "effect"
           "prelude"
+          "react-basic"
+          "react-basic-hooks"
+          "react-basic-dom"
         ];
 
         test-dependencies = [
