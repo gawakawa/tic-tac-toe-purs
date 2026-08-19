@@ -18,9 +18,6 @@
 
       purs-nix = inputs.purs-nix { inherit system; };
 
-      # react-basic 系の FFI は npm の react / react-dom を bare import する。
-      # これらは purs-nix プロジェクト自身ではなく依存パッケージ側のモジュールなので、
-      # docs/foreign.md が指定する方法 (パッケージへの recursiveUpdate) でパッチする。
       node_modules =
         pkgs.importNpmLock.buildNodeModules {
           npmRoot = ./..;
