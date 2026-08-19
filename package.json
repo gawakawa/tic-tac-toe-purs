@@ -3,8 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "serve": "vite",
-    "build": "vite build"
+    "serve": "vite"
   },
   "dependencies": {
     "react": "^19",
