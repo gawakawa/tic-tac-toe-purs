@@ -14,3 +14,4 @@ main.js
 result
 .mcp.json
 .pre-commit-config.yaml
+dist
