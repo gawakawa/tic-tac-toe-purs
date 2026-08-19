@@ -4,17 +4,26 @@ import Prelude
 
 import Data.Maybe (Maybe(..))
 import Effect (Effect)
+import Effect.Console (log)
 import Effect.Exception (throw)
 import React.Basic (JSX, fragment)
 import React.Basic.DOM as R
 import React.Basic.DOM.Client (createRoot, renderRoot)
+import React.Basic.Events (handler_)
 import Web.DOM.NonElementParentNode (getElementById)
 import Web.HTML (window)
 import Web.HTML.HTMLDocument (toNonElementParentNode)
 import Web.HTML.Window (document)
 
+handleClick :: Effect Unit
+handleClick = log "clicked!"
+
 square :: String -> JSX
-square value = R.button { className: "square", children: [ R.text value ] }
+square value = R.button
+  { className: "square"
+  , onClick: handler_ handleClick
+  , children: [ R.text value ]
+  }
 
 board :: JSX
 board = fragment
