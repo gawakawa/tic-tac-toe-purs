@@ -13,31 +13,22 @@ import Web.HTML (window)
 import Web.HTML.HTMLDocument (toNonElementParentNode)
 import Web.HTML.Window (document)
 
+square :: String -> JSX
+square value = R.button { className: "square", children: [ R.text value ] }
+
 board :: JSX
 board = fragment
   [ R.div
       { className: "board-row"
-      , children:
-          [ R.button { className: "square", children: [ R.text "1" ] }
-          , R.button { className: "square", children: [ R.text "2" ] }
-          , R.button { className: "square", children: [ R.text "3" ] }
-          ]
+      , children: [ square "1", square "2", square "3" ]
       }
   , R.div
       { className: "board-row"
-      , children:
-          [ R.button { className: "square", children: [ R.text "4" ] }
-          , R.button { className: "square", children: [ R.text "5" ] }
-          , R.button { className: "square", children: [ R.text "6" ] }
-          ]
+      , children: [ square "4", square "5", square "6" ]
       }
   , R.div
       { className: "board-row"
-      , children:
-          [ R.button { className: "square", children: [ R.text "7" ] }
-          , R.button { className: "square", children: [ R.text "8" ] }
-          , R.button { className: "square", children: [ R.text "9" ] }
-          ]
+      , children: [ square "7", square "8", square "9" ]
       }
   ]
 
