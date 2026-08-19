@@ -2,51 +2,59 @@ module Main where
 
 import Prelude
 
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Tuple.Nested ((/\))
 import Effect (Effect)
-import Effect.Console (log)
 import Effect.Exception (throw)
 import React.Basic (JSX, fragment)
 import React.Basic.DOM as R
 import React.Basic.DOM.Client (createRoot, renderRoot)
 import React.Basic.Events (handler_)
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
 import Web.DOM.NonElementParentNode (getElementById)
 import Web.HTML (window)
 import Web.HTML.HTMLDocument (toNonElementParentNode)
 import Web.HTML.Window (document)
 
-handleClick :: Effect Unit
-handleClick = log "clicked!"
+mkSquare :: Component Unit
+mkSquare = component "Square" \_ ->
+  React.do
+    value /\ setValue <- useState' Nothing
+    let
+      handleClick :: Effect Unit
+      handleClick = setValue $ Just "X"
+    pure $ R.button
+      { className: "square"
+      , onClick: handler_ handleClick
+      , children: [ R.text $ fromMaybe "" value ]
+      }
 
-square :: String -> JSX
-square value = R.button
-  { className: "square"
-  , onClick: handler_ handleClick
-  , children: [ R.text value ]
-  }
-
-board :: JSX
-board = fragment
-  [ R.div
-      { className: "board-row"
-      , children: [ square "1", square "2", square "3" ]
-      }
-  , R.div
-      { className: "board-row"
-      , children: [ square "4", square "5", square "6" ]
-      }
-  , R.div
-      { className: "board-row"
-      , children: [ square "7", square "8", square "9" ]
-      }
-  ]
+mkBoard :: (Unit -> JSX) -> Component Unit
+mkBoard square = component "Board" \_ ->
+  pure $ fragment
+    [ R.div
+        { className: "board-row"
+        , children: [ square unit, square unit, square unit ]
+        }
+    , R.div
+        { className: "board-row"
+        , children: [ square unit, square unit, square unit ]
+        }
+    , R.div
+        { className: "board-row"
+        , children: [ square unit, square unit, square unit ]
+        }
+    ]
 
 main :: Effect Unit
 main = do
+  square <- mkSquare
+  board <- mkBoard square
   doc <- document =<< window
   root <- getElementById "root" $ toNonElementParentNode doc
   case root of
     Nothing -> throw "Could not find container element"
     Just container -> do
       reactRoot <- createRoot container
-      renderRoot reactRoot board
+      renderRoot reactRoot $ board unit
