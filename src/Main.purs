@@ -4,7 +4,7 @@ import Prelude
 
 import Control.Alternative (guard)
 import Data.Array (findMap, replicate, updateAt, (!!))
-import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple.Nested (type (/\), (/\))
 import Effect (Effect)
 import Effect.Exception (throw)
@@ -19,11 +19,19 @@ import Web.HTML (window)
 import Web.HTML.HTMLDocument (toNonElementParentNode)
 import Web.HTML.Window (document)
 
-square :: Maybe String -> Effect Unit -> JSX
+data Player = X | O
+
+derive instance eqPlayer :: Eq Player
+
+instance showPlayer :: Show Player where
+  show X = "X"
+  show O = "O"
+
+square :: Maybe Player -> Effect Unit -> JSX
 square value onSquareClick = R.button
   { className: "square"
   , onClick: handler_ onSquareClick
-  , children: [ R.text $ fromMaybe "" value ]
+  , children: [ R.text $ maybe "" show value ]
   }
 
 mkBoard :: Component Unit
@@ -37,14 +45,14 @@ mkBoard = component "Board" \_ ->
         let alreadyFilled = isJust $ join $ squares !! i
         let hasWinner = isJust $ calculateWinner squares
         unless (alreadyFilled || hasWinner) do
-          let nextSquare = Just $ if xIsNext then "X" else "O"
+          let nextSquare = Just $ if xIsNext then X else O
           setSquares $ fromMaybe squares $ updateAt i nextSquare squares
           setXIsNext $ not xIsNext
 
       status :: String
       status = case calculateWinner squares of
-        Just winner -> "Winner: " <> winner
-        Nothing -> "Next player: " <> if xIsNext then "X" else "O"
+        Just winner -> "Winner: " <> show winner
+        Nothing -> "Next player: " <> (show $ if xIsNext then X else O)
     pure $ fragment
       [ R.div { className: "status", children: [ R.text status ] }
       , R.div
@@ -85,10 +93,10 @@ lines =
   , 2 /\ 4 /\ 6
   ]
 
-calculateWinner :: Array (Maybe String) -> Maybe String
+calculateWinner :: Array (Maybe Player) -> Maybe Player
 calculateWinner squares = findMap checkLine lines
   where
-  checkLine :: Int /\ Int /\ Int -> Maybe String
+  checkLine :: Int /\ Int /\ Int -> Maybe Player
   checkLine (a /\ b /\ c) = do
     squareA <- join $ squares !! a
     squareB <- join $ squares !! b
