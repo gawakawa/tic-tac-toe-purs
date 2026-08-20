@@ -28,11 +28,16 @@ square value onSquareClick = R.button
 mkBoard :: Component Unit
 mkBoard = component "Board" \_ ->
   React.do
+    xIsNext /\ setXIsNext <- useState' $ true
     squares /\ setSquares <- useState' $ replicate 9 Nothing
     let
       handleClick :: Int -> Effect Unit
-      handleClick i = setSquares $ fromMaybe squares $ updateAt i (Just "X")
-        squares
+      handleClick i = case join $ squares !! i of
+        Just _ -> pure unit
+        Nothing -> do
+          let nextSquare = Just $ if xIsNext then "X" else "O"
+          setSquares $ fromMaybe squares $ updateAt i nextSquare squares
+          setXIsNext $ not xIsNext
     pure $ fragment
       [ R.div
           { className: "board-row"
