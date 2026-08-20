@@ -2,9 +2,10 @@ module Main where
 
 import Prelude
 
-import Data.Array (replicate, updateAt, (!!))
-import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Tuple.Nested ((/\))
+import Control.Alternative (guard)
+import Data.Array (findMap, replicate, updateAt, (!!))
+import Data.Maybe (Maybe(..), fromMaybe, isJust)
+import Data.Tuple.Nested (type (/\), (/\))
 import Effect (Effect)
 import Effect.Exception (throw)
 import React.Basic (JSX, fragment)
@@ -32,14 +33,21 @@ mkBoard = component "Board" \_ ->
     squares /\ setSquares <- useState' $ replicate 9 Nothing
     let
       handleClick :: Int -> Effect Unit
-      handleClick i = case join $ squares !! i of
-        Just _ -> pure unit
-        Nothing -> do
+      handleClick i = do
+        let alreadyFilled = isJust $ join $ squares !! i
+        let hasWinner = isJust $ calculateWinner squares
+        unless (alreadyFilled || hasWinner) do
           let nextSquare = Just $ if xIsNext then "X" else "O"
           setSquares $ fromMaybe squares $ updateAt i nextSquare squares
           setXIsNext $ not xIsNext
+
+      status :: String
+      status = case calculateWinner squares of
+        Just winner -> "Winner: " <> winner
+        Nothing -> "Next player: " <> if xIsNext then "X" else "O"
     pure $ fragment
-      [ R.div
+      [ R.div { className: "status", children: [ R.text status ] }
+      , R.div
           { className: "board-row"
           , children:
               [ square (join $ squares !! 0) (handleClick 0)
@@ -64,6 +72,29 @@ mkBoard = component "Board" \_ ->
               ]
           }
       ]
+
+lines :: Array (Int /\ Int /\ Int)
+lines =
+  [ 0 /\ 1 /\ 2
+  , 3 /\ 4 /\ 5
+  , 6 /\ 7 /\ 8
+  , 0 /\ 3 /\ 6
+  , 1 /\ 4 /\ 7
+  , 2 /\ 5 /\ 8
+  , 0 /\ 4 /\ 8
+  , 2 /\ 4 /\ 6
+  ]
+
+calculateWinner :: Array (Maybe String) -> Maybe String
+calculateWinner squares = findMap checkLine lines
+  where
+  checkLine :: Int /\ Int /\ Int -> Maybe String
+  checkLine (a /\ b /\ c) = do
+    squareA <- join $ squares !! a
+    squareB <- join $ squares !! b
+    squareC <- join $ squares !! c
+    guard $ squareA == squareB && squareB == squareC
+    pure squareA
 
 main :: Effect Unit
 main = do
