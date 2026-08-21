@@ -42,18 +42,20 @@ mkBoard = component "Board" \_ ->
     xIsNext /\ setXIsNext <- useState' $ true
     squares /\ setSquares <- useState' $ replicate 9 Nothing
     let
+      winner :: Maybe Player
+      winner = calculateWinner squares
+
       handleClick :: Int -> Effect Unit
       handleClick i = do
         let alreadyFilled = isJust $ join $ squares !! i
-        let hasWinner = isJust $ calculateWinner squares
-        unless (alreadyFilled || hasWinner) do
+        unless (alreadyFilled || isJust winner) do
           let nextSquare = Just $ if xIsNext then X else O
           setSquares $ fromMaybe squares $ updateAt i nextSquare squares
           setXIsNext $ not xIsNext
 
       status :: String
-      status = case calculateWinner squares of
-        Just winner -> "Winner: " <> show winner
+      status = case winner of
+        Just player -> "Winner: " <> show player
         Nothing -> "Next player: " <> (show $ if xIsNext then X else O)
     pure $ fragment
       [ R.div { className: "status", children: [ R.text status ] }
