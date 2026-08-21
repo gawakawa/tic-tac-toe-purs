@@ -21,13 +21,15 @@ import Web.HTML.Window (document)
 
 data Player = X | O
 
+type Mark = Player
+
 derive instance eqPlayer :: Eq Player
 
 instance showPlayer :: Show Player where
   show X = "X"
   show O = "O"
 
-square :: Maybe Player -> Effect Unit -> JSX
+square :: Maybe Mark -> Effect Unit -> JSX
 square value onSquareClick = R.button
   { className: "square"
   , onClick: handler_ onSquareClick
@@ -93,7 +95,7 @@ lines =
   , 2 /\ 4 /\ 6
   ]
 
-calculateWinner :: Array (Maybe Player) -> Maybe Player
+calculateWinner :: Array (Maybe Mark) -> Maybe Player
 calculateWinner squares = findMap checkLine lines
   where
   checkLine :: Int /\ Int /\ Int -> Maybe Player
