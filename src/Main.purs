@@ -110,10 +110,12 @@ board { xIsNext, squares, onPlay } =
 mkGame :: Component Unit
 mkGame = component "Game" \_ ->
   React.do
-    xIsNext /\ setXIsNext <- useState' true
     history /\ setHistory <- useState' $ NEA.singleton $ replicate 9 Nothing
     currentMove /\ setCurrentMove <- useState' 0
     let
+      xIsNext :: Boolean
+      xIsNext = even currentMove
+
       currentSquares :: Squares
       currentSquares = fromMaybe (NEA.last history) $ history NEA.!! currentMove
 
@@ -125,12 +127,10 @@ mkGame = component "Game" \_ ->
             nextSquares
         setHistory nextHistory
         setCurrentMove $ NEA.length nextHistory - 1
-        setXIsNext $ not xIsNext
 
       jumpTo :: Int -> Effect Unit
       jumpTo nextMove = do
         setCurrentMove nextMove
-        setXIsNext $ even nextMove
 
       moves :: Array JSX
       moves =
