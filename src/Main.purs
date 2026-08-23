@@ -7,10 +7,9 @@ import Data.Array (findMap, replicate, updateAt, (!!))
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple.Nested (type (/\), (/\))
-import Debug (todo)
 import Effect (Effect)
 import Effect.Exception (throw)
-import React.Basic (JSX, fragment)
+import React.Basic (JSX, fragment, keyed)
 import React.Basic.DOM as R
 import React.Basic.DOM.Client (createRoot, renderRoot)
 import React.Basic.Events (handler_)
@@ -121,7 +120,7 @@ mkGame = component "Game" \_ ->
         setXIsNext $ not xIsNext
 
       jumpTo :: Int -> Effect Unit
-      jumpTo _nextMove = todo
+      jumpTo _nextMove = pure unit
 
       moves :: Array JSX
       moves =
@@ -133,7 +132,7 @@ mkGame = component "Game" \_ ->
                   if move > 0 then "Go to move #" <> show move
                   else "Go to game start"
               in
-                R.li_
+                keyed (show move) $ R.li_
                   [ R.button
                       { onClick: handler_ $ jumpTo move
                       , children: [ R.text description ]
