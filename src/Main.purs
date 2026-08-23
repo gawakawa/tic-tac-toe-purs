@@ -4,7 +4,9 @@ import Prelude
 
 import Control.Alternative (guard)
 import Data.Array (findMap, replicate, updateAt, (!!))
+import Data.Array.NonEmpty (NonEmptyArray)
 import Data.Array.NonEmpty as NEA
+import Data.Int (even)
 import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Tuple.Nested (type (/\), (/\))
 import Effect (Effect)
@@ -110,17 +112,25 @@ mkGame = component "Game" \_ ->
   React.do
     xIsNext /\ setXIsNext <- useState' true
     history /\ setHistory <- useState' $ NEA.singleton $ replicate 9 Nothing
+    currentMove /\ setCurrentMove <- useState' 0
     let
       currentSquares :: Squares
-      currentSquares = NEA.last history
+      currentSquares = fromMaybe (NEA.last history) $ history NEA.!! currentMove
 
       handlePlay :: Squares -> Effect Unit
       handlePlay nextSquares = do
-        setHistory $ NEA.snoc history nextSquares
+        let
+          nextHistory :: NonEmptyArray Squares
+          nextHistory = NEA.snoc' (NEA.take (currentMove + 1) history)
+            nextSquares
+        setHistory nextHistory
+        setCurrentMove $ NEA.length nextHistory - 1
         setXIsNext $ not xIsNext
 
       jumpTo :: Int -> Effect Unit
-      jumpTo _nextMove = pure unit
+      jumpTo nextMove = do
+        setCurrentMove nextMove
+        setXIsNext $ even nextMove
 
       moves :: Array JSX
       moves =
