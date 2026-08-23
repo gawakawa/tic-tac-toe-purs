@@ -10,6 +10,8 @@
 
 ## Skills
 
+- **purescript-react-style**: Style reference for `react-basic-hooks` code (Props types, component structure). Sourced from https://github.com/jonasbuntinx/purescript-react-realworld.
+
 ## MCP
 
 - **pursuit-mcp**: Use when searching for PureScript functions, types, or documentation on Pursuit
