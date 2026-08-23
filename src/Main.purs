@@ -119,6 +119,29 @@ mkGame = component "Game" \_ ->
       handlePlay nextSquares = do
         setHistory $ NEA.snoc history nextSquares
         setXIsNext $ not xIsNext
+
+      jumpTo :: Int -> Effect Unit
+      jumpTo _nextMove = todo
+
+      moves :: Array JSX
+      moves =
+        NEA.toArray $ NEA.mapWithIndex
+          ( \move _squares ->
+              let
+                description :: String
+                description =
+                  if move > 0 then "Go to move #" <> show move
+                  else "Go to game start"
+              in
+                R.li_
+                  [ R.button
+                      { onClick: handler_ $ jumpTo move
+                      , children: [ R.text description ]
+                      }
+                  ]
+          )
+          history
+
     pure $ R.div
       { className: "game"
       , children:
@@ -132,7 +155,7 @@ mkGame = component "Game" \_ ->
                       }
                   ]
               }
-          , R.div { className: "game-info", children: [ R.ol_ [ todo ] ] }
+          , R.div { className: "game-info", children: [ R.ol_ moves ] }
           ]
       }
 
