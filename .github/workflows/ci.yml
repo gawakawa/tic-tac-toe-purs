@@ -33,7 +33,7 @@ jobs:
         run: nix flake check
 
       - name: Build PureScript output
-        run: nix build
+        run: nix build --out-link output
 
       - name: Install CI dependencies
         run: nix profile add .#ci
