@@ -32,8 +32,17 @@ jobs:
       - name: Flake check
         run: nix flake check
 
-      - name: Build
-        run: nix build
+      - name: Build PureScript output
+        run: nix build --out-link output
+
+      - name: Install CI dependencies
+        run: nix profile add .#ci
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
 
   ci-success:
     needs: [tests]

@@ -100,8 +100,7 @@
       ciPackages = with pkgs; [ nodejs ];
 
       packages = with ps; {
-        default = bundle { };
-        output = output { };
+        default = output { };
         ci = pkgs.buildEnv {
           name = "ci";
           paths = config.ciPackages;
