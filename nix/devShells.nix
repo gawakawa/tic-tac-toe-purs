@@ -14,7 +14,6 @@ _: {
         ++ config.pre-commit.settings.enabledPackages
         ++ [
           (ps.command { })
-          purs-nix.esbuild
           purs-nix.purescript
         ];
     in
