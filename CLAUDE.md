@@ -2,6 +2,8 @@
 
 ## Overview
 
+Tic-tac-toe written in PureScript, running on Cloudflare Workers.
+
 ## Docs
 
 - `README.md` — Project overview and usage
