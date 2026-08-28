@@ -9,7 +9,7 @@ import Data.String as String
 import Effect (Effect)
 import PureScript.CST (RecoveredParserResult(..), parseModule)
 import PursMemo.Transform (defaultOptions, transformModule)
-import Test.Unit (suite, test)
+import Test.Unit (Test, suite, test)
 import Test.Unit.Assert as Assert
 import Test.Unit.Main (runTest)
 import Tidy.Codegen (printModule)
@@ -28,6 +28,15 @@ transform src = case parseModule src of
   reparses s = case parseModule s of
     ParseSucceeded _ -> true
     _ -> false
+
+-- | Run `transform` on `src` and hand the printed output to `body`; fails
+-- | the test with a `label`-derived message if parsing/transforming/
+-- | reparsing didn't succeed.
+withTransformed :: String -> String -> (String -> Test) -> Test
+withTransformed label src body = case transform src of
+  Nothing -> Assert.assert (label <> " failed to parse/transform/reparse")
+    false
+  Just out -> body out
 
 contains :: String -> String -> Boolean
 contains needle haystack = String.contains (Pattern needle) haystack
@@ -192,78 +201,56 @@ main = runTest do
     test
       "mkGame shape: prunes cost-floor/never-hits bindings, memoizes the survivor and the tail"
       do
-        case transform fixtureMkGame of
-          Nothing -> Assert.assert
-            "fixtureMkGame failed to parse/transform/reparse"
-            false
-          Just out -> do
-            Assert.assert "currentSquares stays plain (cost floor)"
-              (not (contains "currentSquares <- React.useMemo" out))
-            Assert.assert "moves is memoized (survives never-hits pruning)"
-              (contains "moves <- React.useMemo" out)
-            Assert.assert "moves's key omits currentMove"
-              (not (contains "UnsafeReference currentMove" out))
-            Assert.assert "the pure tail is split into a useMemo bind"
-              ( contains "memoized <- React.useMemo" out && contains
-                  "pure memoized"
-                  out
-              )
+        withTransformed "fixtureMkGame" fixtureMkGame \out -> do
+          Assert.assert "currentSquares stays plain (cost floor)"
+            (not (contains "currentSquares <- React.useMemo" out))
+          Assert.assert "moves is memoized (survives never-hits pruning)"
+            (contains "moves <- React.useMemo" out)
+          Assert.assert "moves's key omits currentMove"
+            (not (contains "UnsafeReference currentMove" out))
+          Assert.assert "the pure tail is split into a useMemo bind"
+            ( contains "memoized <- React.useMemo" out && contains
+                "pure memoized"
+                out
+            )
 
     test
       "a useEffect-shaped statement pins insertion order across two eligible lets"
       do
-        case transform fixtureInsertionPoint of
-          Nothing -> Assert.assert
-            "fixtureInsertionPoint failed to parse/transform/reparse"
-            false
-          Just out ->
-            case
-              indexOf "squared <-" out,
-              indexOf "useEffect n" out,
-              indexOf "doubled <-" out
-              of
-              Just i1, Just i2, Just i3 -> Assert.assert
-                "order: squared < useEffect < doubled"
-                (i1 < i2 && i2 < i3)
-              _, _, _ -> Assert.assert
-                "expected all three markers in the output"
-                false
+        withTransformed "fixtureInsertionPoint" fixtureInsertionPoint \out ->
+          case
+            indexOf "squared <-" out,
+            indexOf "useEffect n" out,
+            indexOf "doubled <-" out
+            of
+            Just i1, Just i2, Just i3 -> Assert.assert
+              "order: squared < useEffect < doubled"
+              (i1 < i2 && i2 < i3)
+            _, _, _ -> Assert.assert
+              "expected all three markers in the output"
+              false
 
     test "a mutually recursive let group stays untransformed" do
-      case transform fixtureMutualRecursion of
-        Nothing -> Assert.assert
-          "fixtureMutualRecursion failed to parse/transform/reparse"
-          false
-        Just out -> Assert.equal 0 (occurrences "useMemo" out)
+      withTransformed "fixtureMutualRecursion" fixtureMutualRecursion \out ->
+        Assert.equal 0 (occurrences "useMemo" out)
 
     test "a guarded let binding stays untransformed" do
-      case transform fixtureGuarded of
-        Nothing -> Assert.assert
-          "fixtureGuarded failed to parse/transform/reparse"
-          false
-        Just out -> Assert.equal 0 (occurrences "useMemo" out)
+      withTransformed "fixtureGuarded" fixtureGuarded \out ->
+        Assert.equal 0 (occurrences "useMemo" out)
 
     test "a record field label is never collected as a free variable" do
-      case transform fixtureRecordLabel of
-        Nothing -> Assert.assert
-          "fixtureRecordLabel failed to parse/transform/reparse"
-          false
-        Just out -> do
-          Assert.assert "obj is memoized" (contains "obj <- React.useMemo" out)
-          Assert.assert "the label `history` never leaks into a key"
-            (not (contains "UnsafeReference history" out))
-          Assert.assert "the real reference `other` is the key"
-            (contains "UnsafeReference other" out)
+      withTransformed "fixtureRecordLabel" fixtureRecordLabel \out -> do
+        Assert.assert "obj is memoized" (contains "obj <- React.useMemo" out)
+        Assert.assert "the label `history` never leaks into a key"
+          (not (contains "UnsafeReference history" out))
+        Assert.assert "the real reference `other` is the key"
+          (contains "UnsafeReference other" out)
 
     test "a useState' setter bound via `$` is still dropped from a key" do
-      case transform fixtureDollarPipedHook of
-        Nothing -> Assert.assert
-          "fixtureDollarPipedHook failed to parse/transform/reparse"
-          false
-        Just out -> do
-          Assert.assert "advance is memoized"
-            (contains "advance <- React.useMemo" out)
-          Assert.assert "the setter never leaks into a key"
-            (not (contains "UnsafeReference setHistory" out))
-          Assert.assert "the real dependency `step` is the key"
-            (contains "UnsafeReference step" out)
+      withTransformed "fixtureDollarPipedHook" fixtureDollarPipedHook \out -> do
+        Assert.assert "advance is memoized"
+          (contains "advance <- React.useMemo" out)
+        Assert.assert "the setter never leaks into a key"
+          (not (contains "UnsafeReference setHistory" out))
+        Assert.assert "the real dependency `step` is the key"
+          (contains "UnsafeReference step" out)

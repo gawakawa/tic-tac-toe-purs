@@ -31,7 +31,17 @@ module PursMemo.Transform
 
 import Prelude
 
-import Data.Array (any, elem, filter, foldMap, mapMaybe, notElem, nub, null)
+import Data.Array
+  ( all
+  , any
+  , elem
+  , filter
+  , foldMap
+  , mapMaybe
+  , notElem
+  , nub
+  , null
+  )
 import Data.Array as Array
 import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
@@ -130,15 +140,18 @@ reactDoAlias tok = case tok.value of
 type Info = { stability :: Stability, unstableClosure :: Array String }
 type Known = Array (Tuple String Info)
 
+-- | The transform's decision for one candidate binding, plus — when it
+-- | stays plain — the `Info` a downstream binding sees. Computed together
+-- | so the shared deps/closure derivation happens exactly once instead of
+-- | being redone by a separate "and what if not" pass.
+data Verdict = Memoize (Array String) | StaysPlain Info
+
 infoOf :: String -> Known -> Info
 infoOf n known = fromMaybe { stability: Unstable, unstableClosure: [ n ] }
   (Array.findMap (\(Tuple k i) -> if k == n then Just i else Nothing) known)
 
-allSatisfy :: forall a. (a -> Boolean) -> Array a -> Boolean
-allSatisfy p = not <<< any (not <<< p)
-
 isSubsetOf :: Array String -> Array String -> Boolean
-isSubsetOf xs ys = allSatisfy (\x -> elem x ys) xs
+isSubsetOf xs ys = all (\x -> elem x ys) xs
 
 type Entry =
   { names :: Array String
@@ -220,9 +233,9 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     -> Expr Void
     -> Array (DoStatement Void)
   finalizeTail scope known original bodyExpr =
-    case memoVerdict scope known false (identsIn bodyExpr) bodyExpr of
-      Nothing -> [ original ]
-      Just deps ->
+    case verdictFor scope known false (identsIn bodyExpr) bodyExpr of
+      StaysPlain _ -> [ original ]
+      Memoize deps ->
         let
           name = freshName scope "memoized"
         in
@@ -230,19 +243,23 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
           , DoDiscard (exprApp (ident "pure") [ ident name ])
           ]
 
-  -- Decide whether a candidate binding gets memoized. `Nothing` = stays
-  -- plain; `Just deps` = memoize, keyed on the eventually-stable-filtered
-  -- subset of `deps` (filtering happens in `memoExpr`, using `known`, since
-  -- some deps drop out of the key entirely rather than being wrapped).
-  memoVerdict
+  -- Decide whether a candidate binding gets memoized, and — in the same
+  -- pass — the `Info` a downstream binding sees if it doesn't (deps/infos/
+  -- closure are derived once and reused for both, rather than a separate
+  -- pass recomputing them to answer "what if it stays plain").
+  -- `Memoize deps` keys the memo on the eventually-stable-filtered subset
+  -- of `deps` (filtering happens in `memoExpr`, using `known`, since some
+  -- deps drop out of the key entirely rather than being wrapped).
+  verdictFor
     :: Array String
     -> Known
     -> Boolean
     -> Array String
     -> Expr Void
-    -> Maybe (Array String)
-  memoVerdict depsScope known structurallyIneligible rawFreeVars effectiveBody
-    | structurallyIneligible = Nothing
+    -> Verdict
+  verdictFor depsScope known structurallyIneligible rawFreeVars effectiveBody
+    | structurallyIneligible =
+        StaysPlain { stability: Unstable, unstableClosure: stateNames }
     | otherwise =
         let
           deps = nub (filter (\v -> elem v depsScope) rawFreeVars)
@@ -257,39 +274,9 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
           neverHits = opts.prune && stateNames `isSubsetOf` closure
           costPruned = opts.prune && not (hasLambdaOrJsx effectiveBody)
         in
-          if neverHits || costPruned then Nothing else Just deps
-
-  infoForVerdict
-    :: Array String -> Known -> Boolean -> Array String -> Expr Void -> Info
-  infoForVerdict
-    depsScope
-    known
-    structurallyIneligible
-    rawFreeVars
-    effectiveBody =
-    case
-      memoVerdict depsScope known structurallyIneligible rawFreeVars
-        effectiveBody
-      of
-      Just _ -> { stability: MemoizedResult, unstableClosure: [] }
-      Nothing ->
-        if structurallyIneligible then
-          { stability: Unstable, unstableClosure: stateNames }
-        else
-          let
-            deps = nub (filter (\v -> elem v depsScope) rawFreeVars)
-            infos = map (\d -> infoOf d known) deps
-          in
-            { stability: Unstable
-            , unstableClosure: nub
-                ( foldMap
-                    ( \i ->
-                        if i.stability == Unstable then i.unstableClosure
-                        else []
-                    )
-                    infos
-                )
-            }
+          if neverHits || costPruned then
+            StaysPlain { stability: Unstable, unstableClosure: closure }
+          else Memoize deps
 
   transformLetGroup
     :: Array String
@@ -396,7 +383,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         Nothing -> []
         Just _ ->
           case
-            Array.find (\b -> allSatisfy (\d -> elem d done) (externalDeps b))
+            Array.find (\b -> all (\d -> elem d done) (externalDeps b))
               remaining
             of
             Just b -> [ b ] <> order
@@ -420,7 +407,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     emitBatch batch known' = case batch of
       [ e ]
         | Just { name, vbf } <- e.single
-        , allSatisfy (\n -> notElem n mutuallyRecursive) e.names ->
+        , all (\n -> notElem n mutuallyRecursive) e.names ->
             let
               hasWhereOrGuard = case vbf.guarded of
                 Unconditional _ (Where { bindings: Just _ }) -> true
@@ -440,11 +427,11 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 Nothing, _ -> ident "unit" -- unreachable: ineligible is already true here
             in
               case
-                memoVerdict depsScope known' ineligible rawFreeVars
+                verdictFor depsScope known' ineligible rawFreeVars
                   effectiveBody,
                 bodyExpr
                 of
-                Just deps, Just body ->
+                Memoize deps, Just body ->
                   Tuple
                     [ doBind (var name)
                         (memoExpr alias deps known' vbf.binders body)
@@ -454,14 +441,16 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                             { stability: MemoizedResult, unstableClosure: [] }
                         ]
                     )
-                _, _ ->
+                StaysPlain info, _ ->
+                  Tuple [ letGroup e.letBindings ]
+                    (known' <> [ Tuple name info ])
+                Memoize _, Nothing ->
+                  -- unreachable: `ineligible` is already true whenever
+                  -- `bodyExpr` is `Nothing`, which forces `StaysPlain` above
                   Tuple [ letGroup e.letBindings ]
                     ( known' <>
                         [ Tuple name
-                            ( infoForVerdict depsScope known' ineligible
-                                rawFreeVars
-                                effectiveBody
-                            )
+                            { stability: Unstable, unstableClosure: stateNames }
                         ]
                     )
 

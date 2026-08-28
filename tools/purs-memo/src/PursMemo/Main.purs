@@ -8,10 +8,11 @@ module PursMemo.Main (main) where
 
 import Prelude
 
-import Data.Array (all, concat, elem, last, uncons)
+import Data.Array (all, concat, elem, last)
 import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..))
 import Data.String as String
+import Data.Traversable (traverse)
 import Effect (Effect)
 import Effect.Console (log)
 import Node.Encoding (Encoding(..))
@@ -30,7 +31,7 @@ main = do
     Just path -> do
       let opts = { prune: not (elem "--no-prune" args) }
       files <- pursFilesUnder path
-      results <- traverseEffect (transformFile opts) files
+      results <- traverse (transformFile opts) files
       if all identity results then pure unit else exit' 1
 
 usage :: Effect Unit
@@ -60,16 +61,7 @@ pursFilesUnder path = do
   s <- stat path
   if isDirectory s then do
     entries <- readdir path
-    nested <- traverseEffect (\e -> pursFilesUnder (path <> "/" <> e)) entries
+    nested <- traverse (\e -> pursFilesUnder (path <> "/" <> e)) entries
     pure (concat nested)
   else
     pure (if String.contains (Pattern ".purs") path then [ path ] else [])
-
-traverseEffect :: forall a b. (a -> Effect b) -> Array a -> Effect (Array b)
-traverseEffect f = go []
-  where
-  go acc xs = case uncons xs of
-    Nothing -> pure acc
-    Just { head, tail } -> do
-      b <- f head
-      go (acc <> [ b ]) tail

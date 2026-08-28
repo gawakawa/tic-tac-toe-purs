@@ -97,16 +97,23 @@
         dir = ./../tools/purs-memo;
       };
 
-      # Run the tool against `src/` as a plain runCommand: `purs compile`
-      # output already ships `package.json` `{"type":"module"}`, so no
-      # esbuild/bundling step is needed to run it.
+      # The one place that knows how to invoke the compiled tool (`purs
+      # compile` output already ships `package.json` `{"type":"module"}`, so
+      # no esbuild/bundling step is needed) — shared by `mkCodemodOutput`
+      # below and by the devShell command in nix/devShells.nix, rather than
+      # each hand-building the same `node -e` invocation.
+      purs-memo-cli = pkgs.writeShellScriptBin "purs-memo" ''
+        exec ${pkgs.nodejs}/bin/node --input-type=module \
+          -e 'import { main } from "${toolPs.output { }}/PursMemo.Main/index.js"; main()' \
+          -- purs-memo "$@"
+      '';
+
+      # Run the tool against `src/` as a plain runCommand.
       mkCodemodOutput =
         pruneFlag:
         pkgs.runCommand "src-transformed${pruneFlag}" { } ''
           mkdir -p $out && cp -r ${./../src} $out/src && chmod -R u+w $out
-          ${pkgs.nodejs}/bin/node --input-type=module \
-            -e 'import { main } from "${toolPs.output { }}/PursMemo.Main/index.js"; main()' \
-            -- purs-memo ${pruneFlag} $out/src
+          ${purs-memo-cli}/bin/purs-memo ${pruneFlag} $out/src
         '';
 
       codemodOutput = mkCodemodOutput "";
@@ -144,6 +151,7 @@
           toolPs
           purs-nix
           mcpConfig
+          purs-memo-cli
           ;
         ps-tools = inputs.ps-tools.legacyPackages.${system};
       };
