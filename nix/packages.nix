@@ -33,41 +33,91 @@
           });
         };
 
-      ps = purs-nix.purs {
+      ps-deps = [
+        "ursi.debug"
+        "effect"
+        "prelude"
+
+        (with-react purs-nix.ps-pkgs.react-basic [
+          "React.Basic"
+          "React.Basic.StrictMode"
+        ])
+
+        (with-react purs-nix.ps-pkgs.react-basic-dom [
+          "React.Basic.DOM"
+          "React.Basic.DOM.Client"
+          "React.Basic.DOM.Components.GlobalEvents"
+          "React.Basic.DOM.Components.Ref"
+          "React.Basic.DOM.Events"
+          "React.Basic.DOM.Internal"
+          "React.Basic.DOM.Server"
+        ])
+
+        (with-react purs-nix.ps-pkgs.react-basic-hooks [
+          "React.Basic.Hooks"
+          "React.Basic.Hooks.Aff"
+          "React.Basic.Hooks.ErrorBoundary"
+          "React.Basic.Hooks.Suspense"
+        ])
+      ];
+
+      # `srcDir` must contain a `src/` subdirectory; `test/` always comes
+      # from the real, untransformed working tree (the transform never
+      # touches tests, see PursMemo.Main).
+      mkAppPs =
+        srcDir:
+        purs-nix.purs {
+          dependencies = ps-deps;
+          test-dependencies = [ "test-unit" ];
+          srcs = [ "${srcDir}/src" ];
+          test = ./../test;
+        };
+
+      # The purs-memo codemod tool (issue #7): a separate PureScript program,
+      # built with its own purs-nix instance since it needs the CST/codegen
+      # toolchain, not react-basic. `node-fs`/`node-process` import Node
+      # built-ins directly, so no `with-react`-style `node_modules` stamping
+      # is needed.
+      toolPs = purs-nix.purs {
         dependencies = [
-          "ursi.debug"
+          "language-cst-parser"
+          "tidy-codegen"
+          "dodo-printer"
+          "node-fs"
+          "node-process"
+          "console"
           "effect"
           "prelude"
-
-          (with-react purs-nix.ps-pkgs.react-basic [
-            "React.Basic"
-            "React.Basic.StrictMode"
-          ])
-
-          (with-react purs-nix.ps-pkgs.react-basic-dom [
-            "React.Basic.DOM"
-            "React.Basic.DOM.Client"
-            "React.Basic.DOM.Components.GlobalEvents"
-            "React.Basic.DOM.Components.Ref"
-            "React.Basic.DOM.Events"
-            "React.Basic.DOM.Internal"
-            "React.Basic.DOM.Server"
-          ])
-
-          (with-react purs-nix.ps-pkgs.react-basic-hooks [
-            "React.Basic.Hooks"
-            "React.Basic.Hooks.Aff"
-            "React.Basic.Hooks.ErrorBoundary"
-            "React.Basic.Hooks.Suspense"
-          ])
         ];
 
         test-dependencies = [
           "test-unit"
         ];
 
-        dir = ./..;
+        dir = ./../tools/purs-memo;
       };
+
+      # Run the tool against `src/` as a plain runCommand: `purs compile`
+      # output already ships `package.json` `{"type":"module"}`, so no
+      # esbuild/bundling step is needed to run it.
+      mkCodemodOutput =
+        pruneFlag:
+        pkgs.runCommand "src-transformed${pruneFlag}" { } ''
+          mkdir -p $out && cp -r ${./../src} $out/src && chmod -R u+w $out
+          ${pkgs.nodejs}/bin/node --input-type=module \
+            -e 'import { main } from "${toolPs.output { }}/PursMemo.Main/index.js"; main()' \
+            -- purs-memo ${pruneFlag} $out/src
+        '';
+
+      codemodOutput = mkCodemodOutput "";
+      unprunedCodemodOutput = mkCodemodOutput "--no-prune";
+
+      # The A/B/C measurement arms (plan §Verification): A = baseline
+      # (untransformed), B = unpruned (issue #7 as originally written,
+      # amended for soundness), C = pruned (this repo's shipped default).
+      ps = mkAppPs codemodOutput;
+      psUntransformed = mkAppPs ./..;
+      psUnpruned = mkAppPs unprunedCodemodOutput;
 
       mcpConfig =
         inputs.mcp-servers-nix.lib.mkConfig
@@ -91,6 +141,7 @@
         inherit
           pkgs
           ps
+          toolPs
           purs-nix
           mcpConfig
           ;
@@ -99,13 +150,16 @@
 
       ciPackages = with pkgs; [ nodejs ];
 
-      packages = with ps; {
-        default = output { };
+      packages = {
+        default = ps.output { };
+        untransformed = psUntransformed.output { };
+        unpruned = psUnpruned.output { };
         ci = pkgs.buildEnv {
           name = "ci";
           paths = config.ciPackages;
         };
         mcp-config = mcpConfig;
+        purs-memo = toolPs.output { };
       };
     };
 }
