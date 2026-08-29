@@ -14,10 +14,7 @@ import Test.Unit.Assert as Assert
 import Test.Unit.Main (runTest)
 import Tidy.Codegen (printModule)
 
--- | Parse, transform with the shipped (pruned) defaults, and re-print.
--- | `Nothing` on a parse failure of either the input or the output --
--- | every fixture is expected to parse both times, so callers assert
--- | `isJust` before inspecting the printed text.
+-- | Parses, transforms (pruned defaults), and re-prints; `Nothing` on a parse failure either way.
 transform :: String -> Maybe String
 transform src = case parseModule src of
   ParseSucceeded m -> case printModule (transformModule defaultOptions m) of
@@ -29,9 +26,7 @@ transform src = case parseModule src of
     ParseSucceeded _ -> true
     _ -> false
 
--- | Run `transform` on `src` and hand the printed output to `body`; fails
--- | the test with a `label`-derived message if parsing/transforming/
--- | reparsing didn't succeed.
+-- | Runs `transform` and hands the output to `body`, failing the test on parse/transform failure.
 withTransformed :: String -> String -> (String -> Test) -> Test
 withTransformed label src body = case transform src of
   Nothing -> Assert.assert (label <> " failed to parse/transform/reparse")
@@ -48,10 +43,7 @@ occurrences needle haystack = length (String.split (Pattern needle) haystack) -
 indexOf :: String -> String -> Maybe Int
 indexOf needle haystack = String.indexOf (Pattern needle) haystack
 
--- The mkGame shape: two state variables, a non-JSX let (cost-floor pruned),
--- a JSX-valued let whose closure omits one state variable (survives
--- never-hits pruning), and a final `pure` tail depending only on the
--- already-memoized binding (gets tail-split).
+-- Two state vars: a cost-floor-pruned let, a never-hits-surviving JSX let, and a tail-split pure.
 fixtureMkGame :: String
 fixtureMkGame =
   """module Fixture where
@@ -73,9 +65,7 @@ mkGame = component "Game" \_ ->
     pure (R.div { children: [ moves ] })
 """
 
--- A `useEffect`-shaped DoBind sitting between two eligible lets, pinning
--- that memo emission stays at each let's own position rather than being
--- hoisted across it.
+-- A useEffect between two eligible lets pins that memo emission stays in place.
 fixtureInsertionPoint :: String
 fixtureInsertionPoint =
   """module Fixture where
@@ -99,9 +89,7 @@ mkThing = component "Thing" \_ ->
     pure (R.div { children: [] })
 """
 
--- A mutually recursive `let` pair (an SCC): must stay a plain `let`, never
--- a `useMemo` bind, and must keep the final tail plain too (it depends on
--- a residual binding, which can never hit).
+-- A mutually recursive let pair (SCC) must stay plain, including the tail.
 fixtureMutualRecursion :: String
 fixtureMutualRecursion =
   """module Fixture where
@@ -122,11 +110,7 @@ mkLoop = component "Loop" \_ ->
     pure (R.div { children: [ R.text (show (isEven n)) ] })
 """
 
--- A plain self-recursive binding (not mutual recursion — one entry, edging
--- to itself). The dependency graph `topoSort` walks must drop that
--- self-edge, or the entry looks permanently stuck on itself and never gets
--- a verdict at all. `fact` doesn't reference either state variable, so it
--- should still memoize (empty key) like any other eligible binding.
+-- Self-recursion isn't mutual recursion; topoSort must drop the self-edge and still memoize.
 fixtureSelfRecursion :: String
 fixtureSelfRecursion =
   """module Fixture where
@@ -147,8 +131,7 @@ mkFact = component "Fact" \_ ->
     pure (R.div { children: [ R.text (show (fact m)) ] })
 """
 
--- A guarded `let` binding: ineligible by construction, must stay plain,
--- and must keep the final tail plain too (same propagation as above).
+-- A guarded let is ineligible by construction; stays plain, including the tail.
 fixtureGuarded :: String
 fixtureGuarded =
   """module Fixture where
@@ -170,11 +153,7 @@ mkGuard = component "Guard" \_ ->
     pure (R.div { children: [ R.text classify ] })
 """
 
--- The positional-scope / record-label regression: a record field label
--- ("history") coincides with an in-scope state variable name, next to a
--- real reference ("other") to a different state variable. If field labels
--- were ever collected as free variables (the bug the plan's amendment
--- closes), this key would wrongly include `history`.
+-- A record label matching a state name must never be collected as a free variable.
 fixtureRecordLabel :: String
 fixtureRecordLabel =
   """module Fixture where
@@ -195,11 +174,7 @@ mkLabel = component "Label" \_ ->
     pure (R.div { children: [ R.text (show (obj unit)) ] })
 """
 
--- The `$`-piped hook regression: `useState' $ init` is an `ExprOp`, not an
--- `ExprApp` — `appHeadName` must see through it to classify the setter as
--- `StableSemantic` (dropped from keys). This repo's own `history` bind uses
--- exactly this shape. If the setter were misclassified `Unstable` (the bug
--- this pins), it would leak into `advance`'s key.
+-- `useState' $ init` regression: appHeadName must see through `$` to drop the setter from keys.
 fixtureDollarPipedHook :: String
 fixtureDollarPipedHook =
   """module Fixture where
@@ -220,11 +195,7 @@ mkPiped = component "Piped" \_ ->
     pure (R.div { children: [ R.text (show (advance unit)) ] })
 """
 
--- The `#`-piped hook regression: `init # useState'` is also an `ExprOp`,
--- but unlike `$`, `#` puts the function on its RIGHT operand
--- (`#` = `flip ($)`). If `appHeadName` always recursed left (the bug this
--- pins), `setHistory` would be misclassified `Unstable` and leak into
--- `advance`'s key.
+-- `init # useState'` regression: appHeadName must recurse right for `#`, not always left.
 fixtureHashPipedHook :: String
 fixtureHashPipedHook =
   """module Fixture where
@@ -245,12 +216,7 @@ mkPiped = component "Piped" \_ ->
     pure (R.div { children: [ R.text (show (advance unit)) ] })
 """
 
--- The final `pure` tail must run the same purity guard as an ordinary
--- let-binding. Neither state variable is referenced (empty closure, so
--- never-hits pruning doesn't apply either) and the tail builds JSX (so the
--- cost floor doesn't apply either) -- absent the guard this would get
--- wrapped in `React.useMemo unit`, making the effectful call run once ever
--- instead of on every render.
+-- The final pure tail must run the same purity guard as an ordinary let-binding.
 fixtureUnsafeTail :: String
 fixtureUnsafeTail =
   """module Fixture where
@@ -270,12 +236,7 @@ mkUnsafe = component "Unsafe" \_ ->
     pure (unsafePerformEffect (pure (R.div { children: [ R.text "static" ] })))
 """
 
--- A component with zero raw `useState`/`useState'`/`useReducer` results
--- (only a `useRef`, which is `StableDirect` and never counts as state).
--- `stateNamesSet` is empty here, so `Set.subset` on it is vacuously true
--- against any closure -- absent the guard, `thing` would be wrongly
--- pruned as "can never hit" even though it depends on nothing unstable at
--- all.
+-- Zero raw state must not vacuously satisfy the never-hits Set.subset check.
 fixtureNoState :: String
 fixtureNoState =
   """module Fixture where
@@ -294,14 +255,7 @@ mkNoState = component "NoState" \_ ->
     pure (R.div { children: [ thing unit ] })
 """
 
--- The idempotency regression: `already` is shaped exactly like this
--- tool's own previously-emitted output (as if re-running on already-
--- transformed code). If `classifyDoBind` doesn't recognize `useMemo`
--- (the bug this pins), `already` falls through to `Unstable` and is
--- wrongly added to `stateNames` as phantom state -- `thing` (whose real
--- closure is just `n`, the only actual state) then fails the
--- never-hits-pruning subset check (`{n, already} ⊆ {n}` is false) and
--- gets wastefully memoized instead of staying plain.
+-- A DoBind shaped like this tool's own useMemo output must classify MemoizedResult, not Unstable.
 fixtureReprocessedMemo :: String
 fixtureReprocessedMemo =
   """module Fixture where

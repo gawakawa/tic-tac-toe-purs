@@ -1,28 +1,4 @@
--- | The transform: for every `React.do` block, lift eligible `let` bindings
--- | (and, when eligible, the final `pure` tail) into `useMemo` binds.
--- |
--- | Amendments to the design in issue #7 (see the issue / plan for the why):
--- |   * Scope is positional — a binding's free variables are intersected
--- |     with names bound strictly before it (plus, within one `let` group,
--- |     its siblings — a `let` group is simultaneously scoped, same as
--- |     Haskell), never with names bound by a later `DoStatement`. Closes
--- |     both a build break and a silent-staleness bug a flat, whole-scope
--- |     name intersection admits.
--- |   * Record field labels are excluded from free-variable collection
--- |     structurally (see `PursMemo.Scope`), not by position — labels and
--- |     idents lex identically and no position-based fix helps that.
--- |   * Only `DoStatement`s directly under `React.do` are ever touched; the
--- |     transform never recurses into a nested `Effect` do block looking for
--- |     more `DoLet`s.
--- |   * never-hits pruning and a cost floor replace "memoize everything": a
--- |     binding whose dependency closure already covers every unstable state
--- |     variable in scope can never hit, and a binding with neither a lambda
--- |     nor a JSX constructor in its body costs more to memoize than to
--- |     recompute. Both fold into one "stays plain" outcome that propagates
--- |     through the dependency graph exactly like ineligibility
--- |     (guards/where, a polymorphic signature, or an unsafe/Debug mention)
--- |     does — a binding that depends on a plain (unmemoized) binding can
--- |     never hit either, so it never gets memoized.
+-- | Lifts eligible `let` bindings (and the final `pure` tail) in `React.do` blocks into `useMemo` binds.
 module PursMemo.Transform
   ( Options
   , defaultOptions
@@ -73,11 +49,7 @@ import Tidy.Codegen (binaryOp, binderVar, doLet, exprCtor, exprIdent) as RawCode
 import Tidy.Codegen (binderWildcard, doBind, exprApp, exprLambda, exprOp)
 import Tidy.Codegen.Types (BinaryOp)
 
--- | `exprIdent`/`exprCtor`/`binderVar`/`binaryOp` all need `Partial` when
--- | given a `String` name (the name is lexed at codegen time and could, in
--- | principle, fail to lex as an identifier/operator — it never does for the
--- | names this transform generates). Wrapping once here, rather than at
--- | every call site, keeps the constraint out of every signature below.
+-- | `Partial` codegen wrappers — the names this tool generates always lex cleanly.
 ident :: forall e. String -> Expr e
 ident = unsafePartial RawCodegen.exprIdent
 
@@ -90,10 +62,7 @@ var = unsafePartial RawCodegen.binderVar
 op :: forall e. String -> Expr e -> BinaryOp (Expr e)
 op = unsafePartial RawCodegen.binaryOp
 
--- | Wrap a non-empty group of original `LetBinding` nodes (reused verbatim
--- | — a residual binding is never rewritten, only re-grouped) back into one
--- | `let` statement. Always non-empty by construction (every `Entry`
--- | contributes at least one `LetBinding`), hence `unsafePartial`.
+-- | Re-wraps original (unmodified) `LetBinding`s back into one `let` statement.
 letGroup :: Array (LetBinding Void) -> DoStatement Void
 letGroup = unsafePartial RawCodegen.doLet
 
@@ -102,9 +71,7 @@ type Options = { prune :: Boolean }
 defaultOptions :: Options
 defaultOptions = { prune: true }
 
--- | Rewrite every `React.do` block in the module. `React.do` is matched on
--- | the enclosing lambda so its parameters are available as render scope
--- | (`component "Game" \props -> React.do ...`).
+-- | Rewrites every `React.do` block; matched on the enclosing lambda so its params are in scope.
 transformModule :: Options -> Module Void -> Module Void
 transformModule opts = rewriteModuleTopDown (defaultVisitor { onExpr = onExpr })
   where
@@ -120,31 +87,17 @@ transformModule opts = rewriteModuleTopDown (defaultVisitor { onExpr = onExpr })
             }
     other -> other
 
--- | `React.do`'s `do` keyword lexes as a single qualified token; the module
--- | alias it carries is exactly the alias `useMemo`/`UnsafeReference` are
--- | reachable through, so no import patching is ever needed.
+-- | The alias `React.do` was written with — also how `useMemo`/`UnsafeReference` get qualified.
 reactDoAlias :: SourceToken -> Maybe String
 reactDoAlias tok = case tok.value of
   TokLowerName (Just (ModuleName "React")) "do" -> Just "React"
   _ -> Nothing
 
--- | What is known about a render-scope name once it has been processed.
--- | `Unstable` covers both raw hook state (from `stateNames`) and any plain
--- | (unmemoized) let-binding — both change reference every render, so both
--- | propagate their `unstableClosure` to whoever depends on them.
--- | `MemoizedResult` is a name this transform itself bound via `useMemo`: it
--- | contributes nothing further to a closure (it is now stabilized), but
--- | unlike the hook-table stable categories it is still kept (wrapped) in a
--- | downstream key, since its own memo can still miss.
+-- | `Unstable` propagates its closure downstream; `MemoizedResult` doesn't, but still appears in keys.
 type Info = { stability :: Stability, unstableClosure :: Array String }
 type Known = Map String Info
 
--- | The transform's decision for one candidate binding, plus — when it
--- | stays plain — the `Info` a downstream binding sees. Computed together
--- | so the shared deps/closure derivation happens exactly once instead of
--- | being redone by a separate "and what if not" pass. `Memoize` carries
--- | each dep's already-looked-up `Info` (not just its name) so `memoExpr`
--- | doesn't have to repeat the `infoOf` lookup that built the closure.
+-- | A candidate's decision, plus the `Info` a downstream binding sees either way.
 data Verdict = Memoize (Array (Tuple String Info)) | StaysPlain Info
 
 infoOf :: String -> Known -> Info
@@ -158,9 +111,7 @@ type Entry =
       Maybe
         { name :: String
         , vbf :: ValueBindingFields Void
-        -- The entry's free variables, if it's a plain Unconditional-no-where
-        -- binding (computed once here; both `edgesFrom` and `emitBatch`
-        -- need exactly this set, gated on exactly this same pattern).
+        -- Free vars, cached once for edgesFrom/emitBatch.
         , freeVars :: Array String
         }
   }
@@ -171,10 +122,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
   where
   stmtsArr = NEA.toArray db.statements
 
-  -- Every DoBind-introduced name whose value is genuinely unstable (a raw
-  -- hook-returned state value, not its setter/ref/dispatch). Fixed once
-  -- from the do-block's own DoBind statements; let-bindings never add to
-  -- it, they only ever consume it.
+  -- Raw hook state only (not setters/refs), fixed before any let is processed.
   stateNames :: Array String
   stateNames = stmtsArr # foldMap case _ of
     DoBind binder _ rhs -> classifyDoBind binder rhs # mapMaybe
@@ -184,9 +132,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
   stateNamesSet :: Set String
   stateNamesSet = Set.fromFoldable stateNames
 
-  -- The pessimistic `Info` assigned to a binding that stays plain outright
-  -- (a where/guarded body, a multi-member SCC): it could reference any
-  -- state variable, so its closure covers all of them.
+  -- Assigned to a binding that stays plain outright — could reference any state variable.
   pessimisticInfo :: Info
   pessimisticInfo = { stability: Unstable, unstableClosure: stateNames }
 
@@ -263,14 +209,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
           , DoDiscard (exprApp (ident "pure") [ ident name ])
           ]
 
-  -- Decide whether a candidate binding gets memoized, and — in the same
-  -- pass — the `Info` a downstream binding sees if it doesn't (deps/infos/
-  -- closure are derived once and reused for both, rather than a separate
-  -- pass recomputing them to answer "what if it stays plain").
-  -- `Memoize` keys the memo on the eventually-stable-filtered subset of its
-  -- deps (filtering happens in `memoExpr`, since some deps drop out of the
-  -- key entirely rather than being wrapped) — each dep's `Info` travels
-  -- with it, already looked up here, so `memoExpr` need not repeat that.
+  -- Decides Memoize vs StaysPlain and the Info a downstream binding sees, in one pass.
   verdictFor
     :: Array String
     -> Known
@@ -291,11 +230,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 )
                 infos
             )
-          -- A component with no unstable state (stateNamesSet empty) gives
-          -- Set.subset nothing to prove against -- the empty set is
-          -- vacuously a subset of any closure, which would otherwise prune
-          -- every binding in such a component regardless of its actual
-          -- closure.
+          -- Guard against Set.subset being vacuously true when stateNamesSet is empty.
           neverHits = opts.prune && not (Set.isEmpty stateNamesSet) &&
             stateNamesSet `Set.subset` Set.fromFoldable closure
           costPruned = opts.prune && not (hasLambdaOrJsx effectiveBody)
@@ -348,16 +283,10 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     allNames :: Array String
     allNames = foldMap _.names entries
 
-    -- Every name in scope by the time this group's residual bindings are
-    -- reached — fixed for the whole group, so hoisted rather than rebuilt
-    -- per entry.
     fullScope :: Array String
     fullScope = scope <> allNames
 
-    -- Intra-group edges, for SCC (mutual recursion) detection. Only a
-    -- `LetBindingName` entry with a plain Unconditional-no-where body ever
-    -- originates an edge; anything else is a graph leaf (its own
-    -- ineligibility, decided elsewhere, is what keeps it safe).
+    -- Intra-group dependency edges, for mutual-recursion (SCC) detection.
     edgesFrom :: Entry -> Array String
     edgesFrom e = case e.single of
       Just { freeVars } -> filter (\n -> elem n allNames) freeVars
@@ -372,12 +301,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     indexOfName :: String -> Maybe Int
     indexOfName n = Map.lookup n nameToIndex
 
-    -- The same dependency graph `edgesFrom` already describes, keyed by
-    -- entry index (a pattern binding introduces more than one name for a
-    -- single graph node) rather than name, for `topoSort`. A self-edge
-    -- (plain self-recursion, `let f x = ... f ...`) is dropped: it isn't
-    -- mutual recursion, and left in would make `topoSort` see the entry as
-    -- permanently stuck on itself.
+    -- `edgesFrom`'s graph keyed by entry index; self-edges dropped (not mutual recursion).
     graph :: Map Int (Set Int)
     graph = Map.fromFoldable $ entries # Array.mapWithIndex \i e ->
       Tuple i
@@ -385,13 +309,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
             Set.delete i
         )
 
-    -- Batches of entry indices in emission order: a singleton for an
-    -- ordinary binding, or every member of one detected cycle (mutual
-    -- recursion) together. Repeatedly runs `topoSort`, and whenever it
-    -- reports a cycle, batches that cycle's nodes, removes them (along with
-    -- whatever already sorted cleanly before them) and continues on what's
-    -- left — the whole graph is only ever one `let` group's bindings, so
-    -- redoing the sort from scratch each time costs nothing.
+    -- Emission-order batches: singletons, or a detected cycle's members together.
     indexBatches :: Map Int (Set Int) -> Array (Array Int)
     indexBatches g
       | Map.isEmpty g = []
@@ -408,10 +326,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 <> [ List.toUnfoldable cycle ]
                 <> indexBatches remaining
 
-    -- Topological order over batches, and — inlined here since it's now
-    -- just an index lookup rather than a search — the ineligibility check
-    -- `emitBatch` used to make separately: mutual recursion is exactly a
-    -- multi-member batch.
+    -- Topological order over batches; a multi-member batch is exactly mutual recursion.
     orderedGroups :: Array (Array Entry)
     orderedGroups = indexBatches graph <#> Array.mapMaybe (Array.index entries)
 
@@ -429,10 +344,6 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     emitBatch batch known' = case batch of
       [ e ] | Just { name, vbf, freeVars } <- e.single ->
         let
-          -- `bodyExpr` is `Nothing` exactly when a `where`/guard makes
-          -- this binding ineligible outright, so that case never needs
-          -- `verdictFor` at all — it's always `StaysPlain`, pessimistic
-          -- (a where/guarded binding could reference anything).
           bodyExpr = case vbf.guarded of
             Unconditional _ (Where { bindings: Nothing, expr }) -> Just expr
             _ -> Nothing
@@ -469,9 +380,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                       (Map.insert name info known')
 
       _ ->
-        -- Multi-member SCC, or a pattern-form entry (`let Tuple a b = e`):
-        -- always residual, pessimistically Unstable so anything downstream
-        -- that depends on it also never memoizes.
+        -- Multi-member SCC or a pattern binding: always residual and pessimistically Unstable.
         Tuple [ letGroup (foldMap _.letBindings batch) ]
           ( Map.union
               ( Map.fromFoldable $ foldMap _.names batch <#> \n -> Tuple n
@@ -496,23 +405,7 @@ freshName scope base = go 0
     in
       if elem candidate scope then go (n + 1) else candidate
 
--- | Topologically sort a dependency graph (each node mapped to the other
--- | nodes it depends on), closely modeled on the same-named, unexported
--- | function in `PureScript.CST.ModuleGraph` — the PureScript compiler
--- | frontend's own Kahn's-algorithm-plus-DFS-cycle-extraction, used there to
--- | detect circular module imports. Adapted for `let`-binding dependencies
--- | (mutual recursion) instead of imports, `topoSort` differs from the
--- | original in two ways: on hitting a cycle it also returns the prefix that
--- | already sorted cleanly, since the caller here needs to batch off one
--- | cycle and keep going, not abort with a "circular" error; and it breaks
--- | ties among simultaneously-ready nodes by taking the *largest* key first
--- | rather than the smallest. Module compilation order genuinely doesn't
--- | care which of several ready siblings goes first, but a codegen tool
--- | does — `sorted` is built by consing each processed node onto the front,
--- | so the *last*-processed node ends up first; picking ties
--- | largest-first, then, is what reproduces each `let` group's original
--- | declaration order among bindings that don't depend on each other,
--- | rather than silently reversing it.
+-- | Kahn's-algorithm topo sort, modeled on the compiler's own (unexported) `PureScript.CST.ModuleGraph.topoSort`.
 topoSort
   :: forall a
    . Ord a
@@ -562,9 +455,7 @@ topoSort graph = go { roots: startingNodes, sorted: Nil, usages: importCounts }
 
   isRoot (Tuple a count) = if count == 0 then Just a else Nothing
 
-  -- `curr` is already the head of `path` by the time it's re-visited (both
-  -- grow together, one cons per step below), so the closing edge doesn't
-  -- get a second copy of it.
+  -- curr is already path's head when revisited, so it isn't re-added.
   depthFirst path visited curr =
     if Set.member curr visited then Just path
     else if maybe true Set.isEmpty (Map.lookup curr graph) then Nothing
@@ -577,10 +468,7 @@ topoSort graph = go { roots: startingNodes, sorted: Nil, usages: importCounts }
         Nothing
         next
 
--- | `pure expr`, `pure $ expr`, and `expr # pure` all count as a `pure`
--- | tail. A tail that is already a bare identifier (`pure memoized`) is left
--- | alone by the caller (idempotency: re-running the transform on its own
--- | output must not grow the tail further).
+-- | Matches `pure expr`/`pure $ expr`/`expr # pure`; a bare-ident tail is left to the caller.
 matchPureTail :: Expr Void -> Maybe (Expr Void)
 matchPureTail = case _ of
   ExprApp (ExprIdent (QualifiedName { name })) args | unwrap name == "pure" ->
@@ -610,17 +498,7 @@ isBareIdent = case _ of
   ExprIdent _ -> true
   _ -> false
 
--- | A syntactic proxy for "expensive enough that memoizing it can pay off":
--- | the body constructs a lambda (closures are the cheap-but-nonzero case
--- | `useMemo` still helps for) or looks like it builds JSX (a `TokBackslash`
--- | is treated as a lambda signal too, since `moves`-shaped bindings are
--- | exactly "a lambda passed to a combinator that builds a list of JSX"; a
--- | reference to `fragment`/`keyed`/`element`, or anything qualified
--- | through an `R` alias — the react-basic-dom convention this repo and the
--- | wider ecosystem use — is treated as a JSX signal). No type information
--- | is available at this stage; a binding this predicate misses is simply
--- | left unmemoized rather than wrongly memoized, so the failure mode is a
--- | missed optimization, never a correctness issue.
+-- | Heuristic "worth memoizing" signal: a lambda or JSX-shaped token; false negatives just skip memoization.
 hasLambdaOrJsx :: Expr Void -> Boolean
 hasLambdaOrJsx = anyToken isLambdaOrJsxToken
   where

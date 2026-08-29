@@ -1,9 +1,4 @@
--- | CLI entry point. Usage: `purs-memo [--no-prune] <path>`, where `<path>`
--- | is a `.purs` file or a directory searched recursively. Transforms each
--- | file in place. The path is always the last argument, so this tolerates
--- | whatever placeholder tokens precede it (e.g. `node -e '...' -- purs-memo
--- | <path>`, where `process.argv` also carries the node binary and the
--- | `purs-memo` placeholder ahead of the real argument).
+-- | CLI entry point. Usage: `purs-memo [--no-prune] <path>`; transforms each `.purs` file in place.
 module PursMemo.Main (main) where
 
 import Prelude
@@ -31,12 +26,7 @@ main = do
     Nothing -> usage
     Just path -> do
       let opts = { prune: not (elem "--no-prune" args) }
-      -- The shipped wrapper always leaves a placeholder token as the last
-      -- argument even when the caller passed none (see the module doc), so
-      -- a genuine zero-argument invocation reaches here as an invalid
-      -- `path` rather than hitting the `Nothing` case above -- `stat`
-      -- throws on it. Catching turns that (and any other bad path) into
-      -- the usage message instead of a raw stack trace.
+      -- A bad path (including a zero-arg run via the shipped wrapper) shows usage instead of crashing.
       catchException (\_ -> usage) do
         files <- pursFilesUnder path
         results <- traverse (transformFile opts) files
