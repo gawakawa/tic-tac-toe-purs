@@ -220,6 +220,31 @@ mkPiped = component "Piped" \_ ->
     pure (R.div { children: [ R.text (show (advance unit)) ] })
 """
 
+-- The final `pure` tail must run the same purity guard as an ordinary
+-- let-binding. Neither state variable is referenced (empty closure, so
+-- never-hits pruning doesn't apply either) and the tail builds JSX (so the
+-- cost floor doesn't apply either) -- absent the guard this would get
+-- wrapped in `React.useMemo unit`, making the effectful call run once ever
+-- instead of on every render.
+fixtureUnsafeTail :: String
+fixtureUnsafeTail =
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+import Effect.Unsafe (unsafePerformEffect)
+
+mkUnsafe :: Component Unit
+mkUnsafe = component "Unsafe" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    m /\ setM <- useState' 0
+    pure (unsafePerformEffect (pure (R.div { children: [ R.text "static" ] })))
+"""
+
 main :: Effect Unit
 main = runTest do
   suite "PursMemo.Transform" do
@@ -284,3 +309,8 @@ main = runTest do
           (not (contains "UnsafeReference setHistory" out))
         Assert.assert "the real dependency `step` is the key"
           (contains "UnsafeReference step" out)
+
+    test "a final pure tail mentioning unsafePerformEffect stays untransformed"
+      do
+        withTransformed "fixtureUnsafeTail" fixtureUnsafeTail \out ->
+          Assert.equal 0 (occurrences "useMemo" out)

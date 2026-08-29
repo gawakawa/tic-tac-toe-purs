@@ -249,7 +249,11 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     -> Expr Void
     -> Array (DoStatement Void)
   finalizeTail scope known original bodyExpr =
-    case verdictFor scope known false (identsIn bodyExpr) bodyExpr of
+    case
+      verdictFor scope known (mentionsUnsafeOrDebug bodyExpr)
+        (identsIn bodyExpr)
+        bodyExpr
+      of
       StaysPlain _ -> [ original ]
       Memoize deps ->
         let
