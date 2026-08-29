@@ -220,6 +220,31 @@ mkPiped = component "Piped" \_ ->
     pure (R.div { children: [ R.text (show (advance unit)) ] })
 """
 
+-- The `#`-piped hook regression: `init # useState'` is also an `ExprOp`,
+-- but unlike `$`, `#` puts the function on its RIGHT operand
+-- (`#` = `flip ($)`). If `appHeadName` always recursed left (the bug this
+-- pins), `setHistory` would be misclassified `Unstable` and leak into
+-- `advance`'s key.
+fixtureHashPipedHook :: String
+fixtureHashPipedHook =
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkPiped :: Component Unit
+mkPiped = component "Piped" \_ ->
+  React.do
+    history /\ setHistory <- initial 9 # useState'
+    step /\ setStep <- useState' 0
+    let
+      advance = \_ -> setHistory (step + 1)
+    pure (R.div { children: [ R.text (show (advance unit)) ] })
+"""
+
 -- The final `pure` tail must run the same purity guard as an ordinary
 -- let-binding. Neither state variable is referenced (empty closure, so
 -- never-hits pruning doesn't apply either) and the tail builds JSX (so the
@@ -327,6 +352,15 @@ main = runTest do
 
     test "a useState' setter bound via `$` is still dropped from a key" do
       withTransformed "fixtureDollarPipedHook" fixtureDollarPipedHook \out -> do
+        Assert.assert "advance is memoized"
+          (contains "advance <- React.useMemo" out)
+        Assert.assert "the setter never leaks into a key"
+          (not (contains "UnsafeReference setHistory" out))
+        Assert.assert "the real dependency `step` is the key"
+          (contains "UnsafeReference step" out)
+
+    test "a useState' setter bound via `#` is still dropped from a key" do
+      withTransformed "fixtureHashPipedHook" fixtureHashPipedHook \out -> do
         Assert.assert "advance is memoized"
           (contains "advance <- React.useMemo" out)
         Assert.assert "the setter never leaks into a key"

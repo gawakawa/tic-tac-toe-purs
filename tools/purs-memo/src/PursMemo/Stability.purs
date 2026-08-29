@@ -13,6 +13,8 @@ module PursMemo.Stability
 import Prelude
 
 import Data.Array (any)
+import Data.Array as Array
+import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..))
 import Data.Newtype (unwrap)
 import Data.Tuple (Tuple(..))
@@ -59,13 +61,18 @@ classifyDoBind binder rhs =
 
 -- | The function name at the head of an application, ignoring any module
 -- | qualifier (`useState'` and `React.useState'` classify the same way) and
--- | any `$` the hook call is piped through (`useState' $ expensive init`,
--- | this repo's own `history` bind) — `$` is just application, so the head
--- | is still its left operand regardless of how many `$`s chain after it.
+-- | any `$`/`#` the hook call is piped through (`useState' $ expensive init`
+-- | or `expensive init # useState'`, both used in the wild) — `$` applies
+-- | its left operand to its right (head stays left), `#` is `flip ($)`
+-- | (head is its right operand instead), so which side to recurse into
+-- | depends on the last operator in the chain, not a fixed side.
 appHeadName :: Expr Void -> Maybe String
 appHeadName = case _ of
   ExprApp f _ -> appHeadName f
-  ExprOp f _ -> appHeadName f
+  ExprOp lhs ops -> case Array.last (NEA.toArray ops) of
+    Just (Tuple (QualifiedName { name: opName }) rhs)
+      | unwrap opName == "#" -> appHeadName rhs
+    _ -> appHeadName lhs
   ExprIdent (QualifiedName { name }) -> Just (unwrap name)
   _ -> Nothing
 
