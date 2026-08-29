@@ -9,7 +9,7 @@ module PursMemo.Main (main) where
 import Prelude
 
 import Data.Array (all, concat, elem, last)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), isJust)
 import Data.String (Pattern(..))
 import Data.String as String
 import Data.Traversable (traverse)
@@ -64,4 +64,7 @@ pursFilesUnder path = do
     nested <- traverse (\e -> pursFilesUnder (path <> "/" <> e)) entries
     pure (concat nested)
   else
-    pure (if String.contains (Pattern ".purs") path then [ path ] else [])
+    pure
+      ( if isJust (String.stripSuffix (Pattern ".purs") path) then [ path ]
+        else []
+      )
