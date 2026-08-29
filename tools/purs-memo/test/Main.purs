@@ -245,6 +245,30 @@ mkUnsafe = component "Unsafe" \_ ->
     pure (unsafePerformEffect (pure (R.div { children: [ R.text "static" ] })))
 """
 
+-- A component with zero raw `useState`/`useState'`/`useReducer` results
+-- (only a `useRef`, which is `StableDirect` and never counts as state).
+-- `stateNamesSet` is empty here, so `Set.subset` on it is vacuously true
+-- against any closure -- absent the guard, `thing` would be wrongly
+-- pruned as "can never hit" even though it depends on nothing unstable at
+-- all.
+fixtureNoState :: String
+fixtureNoState =
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useRef)
+import React.Basic.Hooks as React
+
+mkNoState :: Component Unit
+mkNoState = component "NoState" \_ ->
+  React.do
+    ref <- useRef 0
+    let
+      thing = \_ -> R.div { children: [] }
+    pure (R.div { children: [ thing unit ] })
+"""
+
 main :: Effect Unit
 main = runTest do
   suite "PursMemo.Transform" do
@@ -314,3 +338,11 @@ main = runTest do
       do
         withTransformed "fixtureUnsafeTail" fixtureUnsafeTail \out ->
           Assert.equal 0 (occurrences "useMemo" out)
+
+    test
+      "a component with no raw useState/useReducer state still memoizes an eligible binding"
+      do
+        withTransformed "fixtureNoState" fixtureNoState \out ->
+          Assert.assert
+            "thing is memoized (empty stateNamesSet doesn't vacuously prune it)"
+            (contains "thing <- React.useMemo" out)

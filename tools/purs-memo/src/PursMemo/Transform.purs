@@ -291,7 +291,12 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 )
                 infos
             )
-          neverHits = opts.prune &&
+          -- A component with no unstable state (stateNamesSet empty) gives
+          -- Set.subset nothing to prove against -- the empty set is
+          -- vacuously a subset of any closure, which would otherwise prune
+          -- every binding in such a component regardless of its actual
+          -- closure.
+          neverHits = opts.prune && not (Set.isEmpty stateNamesSet) &&
             stateNamesSet `Set.subset` Set.fromFoldable closure
           costPruned = opts.prune && not (hasLambdaOrJsx effectiveBody)
         in
