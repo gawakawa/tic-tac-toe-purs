@@ -45,7 +45,7 @@ import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Newtype (unwrap)
 import Data.Set (Set)
 import Data.Set as Set
-import Data.Tuple (Tuple(..))
+import Data.Tuple (Tuple(..), fst)
 import Partial.Unsafe (unsafePartial)
 import PureScript.CST.Traversal (defaultVisitor, rewriteModuleTopDown)
 import PureScript.CST.Types
@@ -154,7 +154,15 @@ infoOf n known = fromMaybe { stability: Unstable, unstableClosure: [ n ] }
 type Entry =
   { names :: Array String
   , letBindings :: Array (LetBinding Void)
-  , single :: Maybe { name :: String, vbf :: ValueBindingFields Void }
+  , single ::
+      Maybe
+        { name :: String
+        , vbf :: ValueBindingFields Void
+        -- The entry's free variables, if it's a plain Unconditional-no-where
+        -- binding (computed once here; both `edgesFrom` and `emitBatch`
+        -- need exactly this set, gated on exactly this same pattern).
+        , freeVars :: Array String
+        }
   }
 
 transformDoBlock
@@ -172,6 +180,15 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     DoBind binder _ rhs -> classifyDoBind binder rhs # mapMaybe
       (\(Tuple n s) -> if s == Unstable then Just n else Nothing)
     _ -> []
+
+  stateNamesSet :: Set String
+  stateNamesSet = Set.fromFoldable stateNames
+
+  -- The pessimistic `Info` assigned to a binding that stays plain outright
+  -- (a where/guarded body, a multi-member SCC): it could reference any
+  -- state variable, so its closure covers all of them.
+  pessimisticInfo :: Info
+  pessimisticInfo = { stability: Unstable, unstableClosure: stateNames }
 
   initialKnown :: Known
   initialKnown = Map.fromFoldable
@@ -195,7 +212,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
       DoBind binder _ rhs ->
         let
           classified = classifyDoBind binder rhs
-          scope' = scope <> boundNames binder
+          scope' = scope <> map fst classified
           known' = Map.union
             ( Map.fromFoldable $ classified <#> \(Tuple n s) -> Tuple n
                 { stability: s
@@ -258,8 +275,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     -> Expr Void
     -> Verdict
   verdictFor depsScope known structurallyIneligible rawFreeVars effectiveBody
-    | structurallyIneligible =
-        StaysPlain { stability: Unstable, unstableClosure: stateNames }
+    | structurallyIneligible = StaysPlain pessimisticInfo
     | otherwise =
         let
           deps = nub (filter (\v -> elem v depsScope) rawFreeVars)
@@ -272,7 +288,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 infos
             )
           neverHits = opts.prune &&
-            Set.fromFoldable stateNames `Set.subset` Set.fromFoldable closure
+            stateNamesSet `Set.subset` Set.fromFoldable closure
           costPruned = opts.prune && not (hasLambdaOrJsx effectiveBody)
         in
           if neverHits || costPruned then
@@ -301,15 +317,19 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
       LetBindingName vbf ->
         let
           name = unwrap (unwrap vbf.name).name
+          freeVars = case vbf.guarded of
+            Unconditional _ (Where { bindings: Nothing, expr }) ->
+              identsIn expr
+            _ -> []
         in
           Just
             { names: [ name ]
             , letBindings: maybe [] (\s -> [ s ]) (originalSig name) <>
                 [ LetBindingName vbf ]
-            , single: Just { name, vbf }
+            , single: Just { name, vbf, freeVars }
             }
       LetBindingPattern binder tok w -> Just
-        { names: boundNames binder
+        { names: letBindingNames (LetBindingPattern binder tok w)
         , letBindings: [ LetBindingPattern binder tok w ]
         , single: Nothing
         }
@@ -319,20 +339,29 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     allNames :: Array String
     allNames = foldMap _.names entries
 
+    -- Every name in scope by the time this group's residual bindings are
+    -- reached — fixed for the whole group, so hoisted rather than rebuilt
+    -- per entry.
+    fullScope :: Array String
+    fullScope = scope <> allNames
+
     -- Intra-group edges, for SCC (mutual recursion) detection. Only a
     -- `LetBindingName` entry with a plain Unconditional-no-where body ever
     -- originates an edge; anything else is a graph leaf (its own
     -- ineligibility, decided elsewhere, is what keeps it safe).
     edgesFrom :: Entry -> Array String
     edgesFrom e = case e.single of
-      Just
-        { vbf: { guarded: Unconditional _ (Where { bindings: Nothing, expr }) }
-        } ->
-        filter (\n -> elem n allNames) (identsIn expr)
+      Just { freeVars } -> filter (\n -> elem n allNames) freeVars
       _ -> []
 
+    nameToIndex :: Map String Int
+    nameToIndex = Map.fromFoldable do
+      Tuple i e <- Array.mapWithIndex Tuple entries
+      n <- e.names
+      pure (Tuple n i)
+
     indexOfName :: String -> Maybe Int
-    indexOfName n = Array.findIndex (\e -> elem n e.names) entries
+    indexOfName n = Map.lookup n nameToIndex
 
     -- The same dependency graph `edgesFrom` already describes, keyed by
     -- entry index (a pattern binding introduces more than one name for a
@@ -389,7 +418,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
 
     emitBatch :: Array Entry -> Known -> Tuple (Array (DoStatement Void)) Known
     emitBatch batch known' = case batch of
-      [ e ] | Just { name, vbf } <- e.single ->
+      [ e ] | Just { name, vbf, freeVars } <- e.single ->
         let
           -- `bodyExpr` is `Nothing` exactly when a `where`/guard makes
           -- this binding ineligible outright, so that case never needs
@@ -398,15 +427,12 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
           bodyExpr = case vbf.guarded of
             Unconditional _ (Where { bindings: Nothing, expr }) -> Just expr
             _ -> Nothing
-          depsScope = filter (\n -> n /= name) (scope <> allNames)
+          depsScope = filter (\n -> n /= name) fullScope
         in
           case bodyExpr of
             Nothing ->
               Tuple [ letGroup e.letBindings ]
-                ( Map.insert name
-                    { stability: Unstable, unstableClosure: stateNames }
-                    known'
-                )
+                (Map.insert name pessimisticInfo known')
             Just body ->
               let
                 ineligible =
@@ -418,8 +444,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                   Nothing -> body
               in
                 case
-                  verdictFor depsScope known' ineligible (identsIn body)
-                    effectiveBody
+                  verdictFor depsScope known' ineligible freeVars effectiveBody
                   of
                   Memoize deps ->
                     Tuple
@@ -441,7 +466,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         Tuple [ letGroup (foldMap _.letBindings batch) ]
           ( Map.union
               ( Map.fromFoldable $ foldMap _.names batch <#> \n -> Tuple n
-                  { stability: Unstable, unstableClosure: stateNames }
+                  pessimisticInfo
               )
               known'
           )

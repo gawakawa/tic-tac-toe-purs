@@ -54,73 +54,73 @@ indexOf needle haystack = String.indexOf (Pattern needle) haystack
 -- already-memoized binding (gets tail-split).
 fixtureMkGame :: String
 fixtureMkGame =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkGame :: Component Unit\n"
-    <> "mkGame = component \"Game\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    history /\\ setHistory <- useState' 0\n"
-    <> "    currentMove /\\ setCurrentMove <- useState' 0\n"
-    <> "    let\n"
-    <> "      currentSquares = combine history currentMove\n"
-    <> "      moves = \\_ -> R.ol_ (buildItems history)\n"
-    <>
-      "    pure (R.div { children: [ moves ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkGame :: Component Unit
+mkGame = component "Game" \_ ->
+  React.do
+    history /\ setHistory <- useState' 0
+    currentMove /\ setCurrentMove <- useState' 0
+    let
+      currentSquares = combine history currentMove
+      moves = \_ -> R.ol_ (buildItems history)
+    pure (R.div { children: [ moves ] })
+"""
 
 -- A `useEffect`-shaped DoBind sitting between two eligible lets, pinning
 -- that memo emission stays at each let's own position rather than being
 -- hoisted across it.
 fixtureInsertionPoint :: String
 fixtureInsertionPoint =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useEffect, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkThing :: Component Unit\n"
-    <> "mkThing = component \"Thing\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    n /\\ setN <- useState' 0\n"
-    <> "    m /\\ setM <- useState' 0\n"
-    <> "    let\n"
-    <> "      squared = \\_ -> n * n\n"
-    <> "    _ <- useEffect n (pure mempty)\n"
-    <> "    let\n"
-    <> "      doubled = \\_ -> m + m\n"
-    <>
-      "    pure (R.div { children: [] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useEffect, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkThing :: Component Unit
+mkThing = component "Thing" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    m /\ setM <- useState' 0
+    let
+      squared = \_ -> n * n
+    _ <- useEffect n (pure mempty)
+    let
+      doubled = \_ -> m + m
+    pure (R.div { children: [] })
+"""
 
 -- A mutually recursive `let` pair (an SCC): must stay a plain `let`, never
 -- a `useMemo` bind, and must keep the final tail plain too (it depends on
 -- a residual binding, which can never hit).
 fixtureMutualRecursion :: String
 fixtureMutualRecursion =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkLoop :: Component Unit\n"
-    <> "mkLoop = component \"Loop\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    n /\\ setN <- useState' 0\n"
-    <> "    let\n"
-    <> "      isEven = \\k -> if k == 0 then true else isOdd (k - 1)\n"
-    <> "      isOdd = \\k -> if k == 0 then false else isEven (k - 1)\n"
-    <>
-      "    pure (R.div { children: [ R.text (show (isEven n)) ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkLoop :: Component Unit
+mkLoop = component "Loop" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    let
+      isEven = \k -> if k == 0 then true else isOdd (k - 1)
+      isOdd = \k -> if k == 0 then false else isEven (k - 1)
+    pure (R.div { children: [ R.text (show (isEven n)) ] })
+"""
 
 -- A plain self-recursive binding (not mutual recursion — one entry, edging
 -- to itself). The dependency graph `topoSort` walks must drop that
@@ -129,46 +129,46 @@ fixtureMutualRecursion =
 -- should still memoize (empty key) like any other eligible binding.
 fixtureSelfRecursion :: String
 fixtureSelfRecursion =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkFact :: Component Unit\n"
-    <> "mkFact = component \"Fact\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    n /\\ setN <- useState' 0\n"
-    <> "    m /\\ setM <- useState' 0\n"
-    <> "    let\n"
-    <> "      fact = \\k -> if k == 0 then 1 else k * fact (k - 1)\n"
-    <>
-      "    pure (R.div { children: [ R.text (show (fact m)) ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkFact :: Component Unit
+mkFact = component "Fact" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    m /\ setM <- useState' 0
+    let
+      fact = \k -> if k == 0 then 1 else k * fact (k - 1)
+    pure (R.div { children: [ R.text (show (fact m)) ] })
+"""
 
 -- A guarded `let` binding: ineligible by construction, must stay plain,
 -- and must keep the final tail plain too (same propagation as above).
 fixtureGuarded :: String
 fixtureGuarded =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkGuard :: Component Unit\n"
-    <> "mkGuard = component \"Guard\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    n /\\ setN <- useState' 0\n"
-    <> "    let\n"
-    <> "      classify\n"
-    <> "        | n > 0 = \"positive\"\n"
-    <> "        | otherwise = \"non-positive\"\n"
-    <>
-      "    pure (R.div { children: [ R.text classify ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkGuard :: Component Unit
+mkGuard = component "Guard" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    let
+      classify
+        | n > 0 = "positive"
+        | otherwise = "non-positive"
+    pure (R.div { children: [ R.text classify ] })
+"""
 
 -- The positional-scope / record-label regression: a record field label
 -- ("history") coincides with an in-scope state variable name, next to a
@@ -177,23 +177,23 @@ fixtureGuarded =
 -- closes), this key would wrongly include `history`.
 fixtureRecordLabel :: String
 fixtureRecordLabel =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkLabel :: Component Unit\n"
-    <> "mkLabel = component \"Label\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    history /\\ setHistory <- useState' 0\n"
-    <> "    other /\\ setOther <- useState' 0\n"
-    <> "    let\n"
-    <> "      obj = \\_ -> { history: other }\n"
-    <>
-      "    pure (R.div { children: [ R.text (show (obj unit)) ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkLabel :: Component Unit
+mkLabel = component "Label" \_ ->
+  React.do
+    history /\ setHistory <- useState' 0
+    other /\ setOther <- useState' 0
+    let
+      obj = \_ -> { history: other }
+    pure (R.div { children: [ R.text (show (obj unit)) ] })
+"""
 
 -- The `$`-piped hook regression: `useState' $ init` is an `ExprOp`, not an
 -- `ExprApp` — `appHeadName` must see through it to classify the setter as
@@ -202,23 +202,23 @@ fixtureRecordLabel =
 -- this pins), it would leak into `advance`'s key.
 fixtureDollarPipedHook :: String
 fixtureDollarPipedHook =
-  "module Fixture where\n"
-    <> "\n"
-    <> "import Prelude\n"
-    <> "import React.Basic.DOM as R\n"
-    <> "import React.Basic.Hooks (Component, component, useState')\n"
-    <> "import React.Basic.Hooks as React\n"
-    <> "import Data.Tuple.Nested ((/\\))\n"
-    <> "\n"
-    <> "mkPiped :: Component Unit\n"
-    <> "mkPiped = component \"Piped\" \\_ ->\n"
-    <> "  React.do\n"
-    <> "    history /\\ setHistory <- useState' $ initial 9\n"
-    <> "    step /\\ setStep <- useState' 0\n"
-    <> "    let\n"
-    <> "      advance = \\_ -> setHistory (step + 1)\n"
-    <>
-      "    pure (R.div { children: [ R.text (show (advance unit)) ] })\n"
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkPiped :: Component Unit
+mkPiped = component "Piped" \_ ->
+  React.do
+    history /\ setHistory <- useState' $ initial 9
+    step /\ setStep <- useState' 0
+    let
+      advance = \_ -> setHistory (step + 1)
+    pure (R.div { children: [ R.text (show (advance unit)) ] })
+"""
 
 main :: Effect Unit
 main = runTest do

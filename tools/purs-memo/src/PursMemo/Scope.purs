@@ -26,6 +26,11 @@ import PureScript.CST.Types (Binder(..), Expr(..), Name(..), QualifiedName(..), 
 separatedItems :: forall a. Separated a -> Array a
 separatedItems (Separated { head, tail }) = [ head ] <> map snd tail
 
+punName :: forall a. RecordLabeled a -> Array String
+punName = case _ of
+  RecordPun (Name { name }) -> [ unwrap name ]
+  RecordField _ _ _ -> []
+
 -- | Every unqualified value identifier referenced in an expression,
 -- | including record puns (`{ x }`), which the generic CST traversal skips
 -- | entirely (it treats `RecordPun` as an opaque leaf, never invoking a
@@ -46,11 +51,6 @@ identsIn = nub <<< foldMapExpr
       (foldMap punName <<< separatedItems)
       value
     _ -> []
-
-  punName :: forall a. RecordLabeled a -> Array String
-  punName = case _ of
-    RecordPun (Name { name }) -> [ unwrap name ]
-    RecordField _ _ _ -> []
 
 -- | Every name a binder introduces, recursively. Used both for `DoBind`
 -- | binders (`history /\ setHistory <- ...`) and for record/constructor
@@ -75,8 +75,3 @@ boundNames = foldMapBinder
       (foldMap punName <<< separatedItems)
       value
     _ -> []
-
-  punName :: RecordLabeled (Binder Void) -> Array String
-  punName = case _ of
-    RecordPun (Name { name }) -> [ unwrap name ]
-    RecordField _ _ _ -> []
