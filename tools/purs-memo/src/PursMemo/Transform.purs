@@ -31,21 +31,20 @@ module PursMemo.Transform
 
 import Prelude
 
-import Data.Array
-  ( all
-  , any
-  , elem
-  , filter
-  , foldMap
-  , mapMaybe
-  , notElem
-  , nub
-  , null
-  )
+import Data.Array (elem, filter, foldMap, mapMaybe, nub, null)
 import Data.Array as Array
 import Data.Array.NonEmpty as NEA
-import Data.Maybe (Maybe(..), fromMaybe, maybe)
+import Data.Either (Either(..))
+import Data.Foldable (all) as Foldable
+import Data.Foldable (foldl)
+import Data.List (List(..), (:))
+import Data.List as List
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
 import Data.Newtype (unwrap)
+import Data.Set (Set)
+import Data.Set as Set
 import Data.Tuple (Tuple(..))
 import Partial.Unsafe (unsafePartial)
 import PureScript.CST.Traversal (defaultVisitor, rewriteModuleTopDown)
@@ -138,7 +137,7 @@ reactDoAlias tok = case tok.value of
 -- | unlike the hook-table stable categories it is still kept (wrapped) in a
 -- | downstream key, since its own memo can still miss.
 type Info = { stability :: Stability, unstableClosure :: Array String }
-type Known = Array (Tuple String Info)
+type Known = Map String Info
 
 -- | The transform's decision for one candidate binding, plus — when it
 -- | stays plain — the `Info` a downstream binding sees. Computed together
@@ -150,10 +149,7 @@ data Verdict = Memoize (Array (Tuple String Info)) | StaysPlain Info
 
 infoOf :: String -> Known -> Info
 infoOf n known = fromMaybe { stability: Unstable, unstableClosure: [ n ] }
-  (Array.findMap (\(Tuple k i) -> if k == n then Just i else Nothing) known)
-
-isSubsetOf :: Array String -> Array String -> Boolean
-isSubsetOf xs ys = all (\x -> elem x ys) xs
+  (Map.lookup n known)
 
 type Entry =
   { names :: Array String
@@ -178,9 +174,10 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     _ -> []
 
   initialKnown :: Known
-  initialKnown = map
-    (\n -> Tuple n { stability: Unstable, unstableClosure: [ n ] })
-    stateNames
+  initialKnown = Map.fromFoldable
+    ( map (\n -> Tuple n { stability: Unstable, unstableClosure: [ n ] })
+        stateNames
+    )
 
   rebuilt =
     case NEA.fromArray (goStatements initialScope initialKnown stmtsArr) of
@@ -199,13 +196,13 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         let
           classified = classifyDoBind binder rhs
           scope' = scope <> boundNames binder
-          known' = known <> map
-            ( \(Tuple n s) -> Tuple n
+          known' = Map.union
+            ( Map.fromFoldable $ classified <#> \(Tuple n s) -> Tuple n
                 { stability: s
                 , unstableClosure: if s == Unstable then [ n ] else []
                 }
             )
-            classified
+            known
         in
           [ stmt ] <> goStatements scope' known' rest
 
@@ -274,7 +271,8 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
                 )
                 infos
             )
-          neverHits = opts.prune && stateNames `isSubsetOf` closure
+          neverHits = opts.prune &&
+            Set.fromFoldable stateNames `Set.subset` Set.fromFoldable closure
           costPruned = opts.prune && not (hasLambdaOrJsx effectiveBody)
         in
           if neverHits || costPruned then
@@ -333,68 +331,51 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         filter (\n -> elem n allNames) (identsIn expr)
       _ -> []
 
-    ownerOf :: String -> Maybe Entry
-    ownerOf n = Array.find (\e -> elem n e.names) entries
+    indexOfName :: String -> Maybe Int
+    indexOfName n = Array.findIndex (\e -> elem n e.names) entries
 
-    reachable :: String -> Array String
-    reachable start = step [ start ] []
-      where
-      step [] acc = acc
-      step frontier acc =
-        let
-          acc' = nub (acc <> frontier)
-          next = nub (frontier >>= (\n -> maybe [] edgesFrom (ownerOf n))) #
-            filter (\n -> notElem n acc')
-        in
-          if null next then acc' else step next acc'
+    -- The same dependency graph `edgesFrom` already describes, keyed by
+    -- entry index (a pattern binding introduces more than one name for a
+    -- single graph node) rather than name, for `topoSort`. A self-edge
+    -- (plain self-recursion, `let f x = ... f ...`) is dropped: it isn't
+    -- mutual recursion, and left in would make `topoSort` see the entry as
+    -- permanently stuck on itself.
+    graph :: Map Int (Set Int)
+    graph = Map.fromFoldable $ entries # Array.mapWithIndex \i e ->
+      Tuple i
+        ( Set.fromFoldable (Array.mapMaybe indexOfName (edgesFrom e)) #
+            Set.delete i
+        )
 
-    sccOf :: String -> Array String
-    sccOf n = filter
-      (\m -> m /= n && elem m (reachable n) && elem n (reachable m))
-      allNames
+    -- Batches of entry indices in emission order: a singleton for an
+    -- ordinary binding, or every member of one detected cycle (mutual
+    -- recursion) together. Repeatedly runs `topoSort`, and whenever it
+    -- reports a cycle, batches that cycle's nodes, removes them (along with
+    -- whatever already sorted cleanly before them) and continues on what's
+    -- left — the whole graph is only ever one `let` group's bindings, so
+    -- redoing the sort from scratch each time costs nothing.
+    indexBatches :: Map Int (Set Int) -> Array (Array Int)
+    indexBatches g
+      | Map.isEmpty g = []
+      | otherwise = case topoSort g of
+          Right sorted -> pure <$> List.toUnfoldable sorted
+          Left { sorted, cycle } ->
+            let
+              handled = Set.fromFoldable sorted <> Set.fromFoldable cycle
+              remaining = g
+                # Map.filterKeys (\k -> not (Set.member k handled))
+                # map (Set.filter (\k -> not (Set.member k handled)))
+            in
+              (pure <$> List.toUnfoldable sorted)
+                <> [ List.toUnfoldable cycle ]
+                <> indexBatches remaining
 
-    mutuallyRecursive :: Array String
-    mutuallyRecursive = filter (\n -> not (null (sccOf n))) allNames
-
-    -- Batch entries into emission units: a lone entry, or (for a
-    -- multi-member SCC) every member of that SCC together, combined into
-    -- one residual `let`.
-    batches :: Array (Array Entry)
-    batches = step entries []
-      where
-      step es acc = case Array.uncons es of
-        Nothing -> acc
-        Just { head, tail } ->
-          let
-            group = nub (head.names <> foldMap sccOf head.names)
-            members = filter (\e -> any (\n -> elem n group) e.names) es
-            remaining = filter (\e -> not (any (\n -> elem n group) e.names))
-              tail
-          in
-            step remaining (acc <> [ members ])
-
-    -- Topological order over batches: a batch's external deps are the
-    -- union of its members' raw free vars, restricted to other batches'
-    -- names — repeatedly take the first batch whose external deps are
-    -- already emitted.
+    -- Topological order over batches, and — inlined here since it's now
+    -- just an index lookup rather than a search — the ineligibility check
+    -- `emitBatch` used to make separately: mutual recursion is exactly a
+    -- multi-member batch.
     orderedGroups :: Array (Array Entry)
-    orderedGroups = order batches []
-      where
-      externalDeps b = foldMap edgesFrom b # filter
-        (\n -> notElem n (foldMap _.names b))
-      order remaining done = case Array.uncons remaining of
-        Nothing -> []
-        Just _ ->
-          case
-            Array.find (\b -> all (\d -> elem d done) (externalDeps b))
-              remaining
-            of
-            Just b -> [ b ] <> order
-              (filter (\x -> not (eqBatch x b)) remaining)
-              (done <> foldMap _.names b)
-            Nothing -> remaining -- defensive: shouldn't happen once SCCs are batched together
-
-      eqBatch a b = foldMap _.names a == foldMap _.names b
+    orderedGroups = indexBatches graph <#> Array.mapMaybe (Array.index entries)
 
     go :: Array (Array Entry) -> Known -> Tuple (Array (DoStatement Void)) Known
     go groups known' = case Array.uncons groups of
@@ -408,70 +389,61 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
 
     emitBatch :: Array Entry -> Known -> Tuple (Array (DoStatement Void)) Known
     emitBatch batch known' = case batch of
-      [ e ]
-        | Just { name, vbf } <- e.single
-        , all (\n -> notElem n mutuallyRecursive) e.names ->
-            let
-              -- `bodyExpr` is `Nothing` exactly when a `where`/guard makes
-              -- this binding ineligible outright, so that case never needs
-              -- `verdictFor` at all — it's always `StaysPlain`, pessimistic
-              -- (a where/guarded binding could reference anything).
-              bodyExpr = case vbf.guarded of
-                Unconditional _ (Where { bindings: Nothing, expr }) -> Just expr
-                _ -> Nothing
-              depsScope = filter (\n -> n /= name) (scope <> allNames)
-            in
-              case bodyExpr of
-                Nothing ->
-                  Tuple [ letGroup e.letBindings ]
-                    ( known' <>
-                        [ Tuple name
-                            { stability: Unstable, unstableClosure: stateNames }
-                        ]
-                    )
-                Just body ->
-                  let
-                    ineligible =
-                      maybe false hasForallOrConstraint
-                        (sigType name)
-                        || mentionsUnsafeOrDebug body
-                    effectiveBody = case Array.uncons vbf.binders of
-                      Just _ -> exprLambda vbf.binders body
-                      Nothing -> body
-                  in
-                    case
-                      verdictFor depsScope known' ineligible (identsIn body)
-                        effectiveBody
-                      of
-                      Memoize deps ->
-                        Tuple
-                          [ doBind (var name)
-                              (memoExpr alias deps vbf.binders body)
-                          ]
-                          ( known' <>
-                              [ Tuple name
-                                  { stability: MemoizedResult
-                                  , unstableClosure: []
-                                  }
-                              ]
-                          )
-                      StaysPlain info ->
-                        Tuple [ letGroup e.letBindings ]
-                          (known' <> [ Tuple name info ])
+      [ e ] | Just { name, vbf } <- e.single ->
+        let
+          -- `bodyExpr` is `Nothing` exactly when a `where`/guard makes
+          -- this binding ineligible outright, so that case never needs
+          -- `verdictFor` at all — it's always `StaysPlain`, pessimistic
+          -- (a where/guarded binding could reference anything).
+          bodyExpr = case vbf.guarded of
+            Unconditional _ (Where { bindings: Nothing, expr }) -> Just expr
+            _ -> Nothing
+          depsScope = filter (\n -> n /= name) (scope <> allNames)
+        in
+          case bodyExpr of
+            Nothing ->
+              Tuple [ letGroup e.letBindings ]
+                ( Map.insert name
+                    { stability: Unstable, unstableClosure: stateNames }
+                    known'
+                )
+            Just body ->
+              let
+                ineligible =
+                  maybe false hasForallOrConstraint
+                    (sigType name)
+                    || mentionsUnsafeOrDebug body
+                effectiveBody = case Array.uncons vbf.binders of
+                  Just _ -> exprLambda vbf.binders body
+                  Nothing -> body
+              in
+                case
+                  verdictFor depsScope known' ineligible (identsIn body)
+                    effectiveBody
+                  of
+                  Memoize deps ->
+                    Tuple
+                      [ doBind (var name)
+                          (memoExpr alias deps vbf.binders body)
+                      ]
+                      ( Map.insert name
+                          { stability: MemoizedResult, unstableClosure: [] }
+                          known'
+                      )
+                  StaysPlain info ->
+                    Tuple [ letGroup e.letBindings ]
+                      (Map.insert name info known')
 
       _ ->
         -- Multi-member SCC, or a pattern-form entry (`let Tuple a b = e`):
         -- always residual, pessimistically Unstable so anything downstream
         -- that depends on it also never memoizes.
         Tuple [ letGroup (foldMap _.letBindings batch) ]
-          ( known' <> foldMap
-              ( \e -> map
-                  ( \n -> Tuple n
-                      { stability: Unstable, unstableClosure: stateNames }
-                  )
-                  e.names
+          ( Map.union
+              ( Map.fromFoldable $ foldMap _.names batch <#> \n -> Tuple n
+                  { stability: Unstable, unstableClosure: stateNames }
               )
-              batch
+              known'
           )
 
 letBindingNames :: LetBinding Void -> Array String
@@ -489,6 +461,84 @@ freshName scope base = go 0
       candidate = if n == 0 then base else base <> show n
     in
       if elem candidate scope then go (n + 1) else candidate
+
+-- | Topologically sort a dependency graph (each node mapped to the other
+-- | nodes it depends on), closely modeled on the same-named, unexported
+-- | function in `PureScript.CST.ModuleGraph` — the PureScript compiler
+-- | frontend's own Kahn's-algorithm-plus-DFS-cycle-extraction, used there to
+-- | detect circular module imports. Adapted for `let`-binding dependencies
+-- | (mutual recursion) instead of imports, `topoSort` differs from the
+-- | original in two ways: on hitting a cycle it also returns the prefix that
+-- | already sorted cleanly, since the caller here needs to batch off one
+-- | cycle and keep going, not abort with a "circular" error; and it breaks
+-- | ties among simultaneously-ready nodes by taking the *largest* key first
+-- | rather than the smallest. Module compilation order genuinely doesn't
+-- | care which of several ready siblings goes first, but a codegen tool
+-- | does — `sorted` is built by consing each processed node onto the front,
+-- | so the *last*-processed node ends up first; picking ties
+-- | largest-first, then, is what reproduces each `let` group's original
+-- | declaration order among bindings that don't depend on each other,
+-- | rather than silently reversing it.
+topoSort
+  :: forall a
+   . Ord a
+  => Map a (Set a)
+  -> Either { sorted :: List a, cycle :: List a } (List a)
+topoSort graph = go { roots: startingNodes, sorted: Nil, usages: importCounts }
+  where
+  go { roots, sorted, usages } = case Set.findMax roots of
+    Nothing
+      | Foldable.all (eq 0) usages -> Right sorted
+      | otherwise ->
+          let
+            stuck = usages
+              # Map.filterWithKey
+                  ( \a count -> count > 0 &&
+                      not (maybe true Set.isEmpty (Map.lookup a graph))
+                  )
+              # Map.keys
+            found = foldl
+              (\b a -> if isJust b then b else depthFirst Nil Set.empty a)
+              Nothing
+              stuck
+          in
+            Left { sorted, cycle: fromMaybe Nil found }
+    Just curr ->
+      let
+        deps = fromMaybe Set.empty (Map.lookup curr graph)
+        usages' = foldl (\u k -> Map.insertWith add k (-1) u) usages deps
+      in
+        go
+          { roots: foldl (appendRoot usages') (Set.delete curr roots) deps
+          , sorted: curr : sorted
+          , usages: usages'
+          }
+
+  appendRoot usages roots curr = maybe roots (flip Set.insert roots) do
+    count <- Map.lookup curr usages
+    isRoot (Tuple curr count)
+
+  startingNodes = Map.keys $ Map.filterWithKey
+    (\k v -> isJust (isRoot (Tuple k v)))
+    importCounts
+
+  importCounts = Map.fromFoldableWith add do
+    Tuple a bs <- Map.toUnfoldable graph
+    [ Tuple a 0 ] <> map (flip Tuple 1) (Set.toUnfoldable bs :: Array a)
+
+  isRoot (Tuple a count) = if count == 0 then Just a else Nothing
+
+  depthFirst path visited curr =
+    if Set.member curr visited then Just (curr : path)
+    else if maybe true Set.isEmpty (Map.lookup curr graph) then Nothing
+    else Map.lookup curr graph >>= \next ->
+      foldl
+        ( \b a ->
+            if isJust b then b
+            else depthFirst (curr : path) (Set.insert curr visited) a
+        )
+        Nothing
+        next
 
 -- | `pure expr`, `pure $ expr`, and `expr # pure` all count as a `pure`
 -- | tail. A tail that is already a bare identifier (`pure memoized`) is left

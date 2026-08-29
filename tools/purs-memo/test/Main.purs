@@ -122,6 +122,31 @@ fixtureMutualRecursion =
     <>
       "    pure (R.div { children: [ R.text (show (isEven n)) ] })\n"
 
+-- A plain self-recursive binding (not mutual recursion — one entry, edging
+-- to itself). The dependency graph `topoSort` walks must drop that
+-- self-edge, or the entry looks permanently stuck on itself and never gets
+-- a verdict at all. `fact` doesn't reference either state variable, so it
+-- should still memoize (empty key) like any other eligible binding.
+fixtureSelfRecursion :: String
+fixtureSelfRecursion =
+  "module Fixture where\n"
+    <> "\n"
+    <> "import Prelude\n"
+    <> "import React.Basic.DOM as R\n"
+    <> "import React.Basic.Hooks (Component, component, useState')\n"
+    <> "import React.Basic.Hooks as React\n"
+    <> "import Data.Tuple.Nested ((/\\))\n"
+    <> "\n"
+    <> "mkFact :: Component Unit\n"
+    <> "mkFact = component \"Fact\" \\_ ->\n"
+    <> "  React.do\n"
+    <> "    n /\\ setN <- useState' 0\n"
+    <> "    m /\\ setM <- useState' 0\n"
+    <> "    let\n"
+    <> "      fact = \\k -> if k == 0 then 1 else k * fact (k - 1)\n"
+    <>
+      "    pure (R.div { children: [ R.text (show (fact m)) ] })\n"
+
 -- A guarded `let` binding: ineligible by construction, must stay plain,
 -- and must keep the final tail plain too (same propagation as above).
 fixtureGuarded :: String
@@ -233,6 +258,11 @@ main = runTest do
     test "a mutually recursive let group stays untransformed" do
       withTransformed "fixtureMutualRecursion" fixtureMutualRecursion \out ->
         Assert.equal 0 (occurrences "useMemo" out)
+
+    test "plain self-recursion is not mistaken for mutual recursion" do
+      withTransformed "fixtureSelfRecursion" fixtureSelfRecursion \out ->
+        Assert.assert "fact is memoized (self-edge doesn't block a verdict)"
+          (contains "fact <- React.useMemo" out)
 
     test "a guarded let binding stays untransformed" do
       withTransformed "fixtureGuarded" fixtureGuarded \out ->
