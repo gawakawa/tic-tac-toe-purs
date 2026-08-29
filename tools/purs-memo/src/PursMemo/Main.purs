@@ -15,6 +15,7 @@ import Data.String as String
 import Data.Traversable (traverse)
 import Effect (Effect)
 import Effect.Console (log)
+import Effect.Exception (catchException)
 import Node.Encoding (Encoding(..))
 import Node.FS.Stats (isDirectory)
 import Node.FS.Sync (readTextFile, readdir, stat, writeTextFile)
@@ -30,9 +31,16 @@ main = do
     Nothing -> usage
     Just path -> do
       let opts = { prune: not (elem "--no-prune" args) }
-      files <- pursFilesUnder path
-      results <- traverse (transformFile opts) files
-      if all identity results then pure unit else exit' 1
+      -- The shipped wrapper always leaves a placeholder token as the last
+      -- argument even when the caller passed none (see the module doc), so
+      -- a genuine zero-argument invocation reaches here as an invalid
+      -- `path` rather than hitting the `Nothing` case above -- `stat`
+      -- throws on it. Catching turns that (and any other bad path) into
+      -- the usage message instead of a raw stack trace.
+      catchException (\_ -> usage) do
+        files <- pursFilesUnder path
+        results <- traverse (transformFile opts) files
+        if all identity results then pure unit else exit' 1
 
 usage :: Effect Unit
 usage = do
