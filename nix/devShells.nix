@@ -6,7 +6,6 @@ _: {
       ps,
       purs-nix,
       mcpConfig,
-      purs-memo-cli,
       ...
     }:
     let
@@ -16,7 +15,7 @@ _: {
         ++ [
           (ps.command { })
           purs-nix.purescript
-          purs-memo-cli
+          config.packages.purs-memo-cli
         ];
     in
     {

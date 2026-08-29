@@ -1,7 +1,6 @@
 {
   "permissions": {
-    "allow": ["Edit"],
-    "ask": ["Edit(src/**)"]
+    "ask": ["Edit(/src/**)"]
   },
   "hooks": {
     "PostToolUse": [

@@ -143,8 +143,10 @@ type Known = Array (Tuple String Info)
 -- | The transform's decision for one candidate binding, plus — when it
 -- | stays plain — the `Info` a downstream binding sees. Computed together
 -- | so the shared deps/closure derivation happens exactly once instead of
--- | being redone by a separate "and what if not" pass.
-data Verdict = Memoize (Array String) | StaysPlain Info
+-- | being redone by a separate "and what if not" pass. `Memoize` carries
+-- | each dep's already-looked-up `Info` (not just its name) so `memoExpr`
+-- | doesn't have to repeat the `infoOf` lookup that built the closure.
+data Verdict = Memoize (Array (Tuple String Info)) | StaysPlain Info
 
 infoOf :: String -> Known -> Info
 infoOf n known = fromMaybe { stability: Unstable, unstableClosure: [ n ] }
@@ -239,7 +241,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         let
           name = freshName scope "memoized"
         in
-          [ doBind (var name) (memoExpr alias deps known [] bodyExpr)
+          [ doBind (var name) (memoExpr alias deps [] bodyExpr)
           , DoDiscard (exprApp (ident "pure") [ ident name ])
           ]
 
@@ -247,9 +249,10 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
   -- pass — the `Info` a downstream binding sees if it doesn't (deps/infos/
   -- closure are derived once and reused for both, rather than a separate
   -- pass recomputing them to answer "what if it stays plain").
-  -- `Memoize deps` keys the memo on the eventually-stable-filtered subset
-  -- of `deps` (filtering happens in `memoExpr`, using `known`, since some
-  -- deps drop out of the key entirely rather than being wrapped).
+  -- `Memoize` keys the memo on the eventually-stable-filtered subset of its
+  -- deps (filtering happens in `memoExpr`, since some deps drop out of the
+  -- key entirely rather than being wrapped) — each dep's `Info` travels
+  -- with it, already looked up here, so `memoExpr` need not repeat that.
   verdictFor
     :: Array String
     -> Known
@@ -263,10 +266,10 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
     | otherwise =
         let
           deps = nub (filter (\v -> elem v depsScope) rawFreeVars)
-          infos = map (\d -> infoOf d known) deps
+          infos = map (\d -> Tuple d (infoOf d known)) deps
           closure = nub
             ( foldMap
-                ( \i ->
+                ( \(Tuple _ i) ->
                     if i.stability == Unstable then i.unstableClosure else []
                 )
                 infos
@@ -276,7 +279,7 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         in
           if neverHits || costPruned then
             StaysPlain { stability: Unstable, unstableClosure: closure }
-          else Memoize deps
+          else Memoize infos
 
   transformLetGroup
     :: Array String
@@ -409,50 +412,52 @@ transformDoBlock opts alias initialScope db = db { statements = rebuilt }
         | Just { name, vbf } <- e.single
         , all (\n -> notElem n mutuallyRecursive) e.names ->
             let
-              hasWhereOrGuard = case vbf.guarded of
-                Unconditional _ (Where { bindings: Just _ }) -> true
-                Guarded _ -> true
-                _ -> false
+              -- `bodyExpr` is `Nothing` exactly when a `where`/guard makes
+              -- this binding ineligible outright, so that case never needs
+              -- `verdictFor` at all — it's always `StaysPlain`, pessimistic
+              -- (a where/guarded binding could reference anything).
               bodyExpr = case vbf.guarded of
                 Unconditional _ (Where { bindings: Nothing, expr }) -> Just expr
                 _ -> Nothing
-              ineligible = hasWhereOrGuard
-                || maybe false hasForallOrConstraint (sigType name)
-                || maybe true mentionsUnsafeOrDebug bodyExpr
-              rawFreeVars = maybe [] identsIn bodyExpr
               depsScope = filter (\n -> n /= name) (scope <> allNames)
-              effectiveBody = case bodyExpr, Array.uncons vbf.binders of
-                Just b, Just _ -> exprLambda vbf.binders b
-                Just b, Nothing -> b
-                Nothing, _ -> ident "unit" -- unreachable: ineligible is already true here
             in
-              case
-                verdictFor depsScope known' ineligible rawFreeVars
-                  effectiveBody,
-                bodyExpr
-                of
-                Memoize deps, Just body ->
-                  Tuple
-                    [ doBind (var name)
-                        (memoExpr alias deps known' vbf.binders body)
-                    ]
-                    ( known' <>
-                        [ Tuple name
-                            { stability: MemoizedResult, unstableClosure: [] }
-                        ]
-                    )
-                StaysPlain info, _ ->
-                  Tuple [ letGroup e.letBindings ]
-                    (known' <> [ Tuple name info ])
-                Memoize _, Nothing ->
-                  -- unreachable: `ineligible` is already true whenever
-                  -- `bodyExpr` is `Nothing`, which forces `StaysPlain` above
+              case bodyExpr of
+                Nothing ->
                   Tuple [ letGroup e.letBindings ]
                     ( known' <>
                         [ Tuple name
                             { stability: Unstable, unstableClosure: stateNames }
                         ]
                     )
+                Just body ->
+                  let
+                    ineligible =
+                      maybe false hasForallOrConstraint
+                        (sigType name)
+                        || mentionsUnsafeOrDebug body
+                    effectiveBody = case Array.uncons vbf.binders of
+                      Just _ -> exprLambda vbf.binders body
+                      Nothing -> body
+                  in
+                    case
+                      verdictFor depsScope known' ineligible (identsIn body)
+                        effectiveBody
+                      of
+                      Memoize deps ->
+                        Tuple
+                          [ doBind (var name)
+                              (memoExpr alias deps vbf.binders body)
+                          ]
+                          ( known' <>
+                              [ Tuple name
+                                  { stability: MemoizedResult
+                                  , unstableClosure: []
+                                  }
+                              ]
+                          )
+                      StaysPlain info ->
+                        Tuple [ letGroup e.letBindings ]
+                          (known' <> [ Tuple name info ])
 
       _ ->
         -- Multi-member SCC, or a pattern-form entry (`let Tuple a b = e`):
@@ -542,17 +547,16 @@ hasLambdaOrJsx = anyToken isLambdaOrJsxToken
 
 memoExpr
   :: String
-  -> Array String
-  -> Known
+  -> Array (Tuple String Info)
   -> Array (Binder Void)
   -> Expr Void
   -> Expr Void
-memoExpr alias deps known binders body =
+memoExpr alias deps binders body =
   exprApp (ident (alias <> ".useMemo"))
     [ key, exprLambda [ binderWildcard ] innerBody ]
   where
   keyDeps = filter
-    ( \d -> case (infoOf d known).stability of
+    ( \(Tuple _ info) -> case info.stability of
         StableDirect -> false
         StableSemantic -> false
         _ -> true
@@ -565,7 +569,7 @@ memoExpr alias deps known binders body =
       Nothing -> wrapRef head
       Just _ -> exprOp (wrapRef head) (map (op "/\\" <<< wrapRef) tail)
 
-  wrapRef n = exprApp (ctor (alias <> ".UnsafeReference")) [ ident n ]
+  wrapRef (Tuple n _) = exprApp (ctor (alias <> ".UnsafeReference")) [ ident n ]
 
   innerBody = case Array.uncons binders of
     Just _ -> exprLambda binders body

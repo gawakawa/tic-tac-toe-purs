@@ -99,9 +99,10 @@
 
       # The one place that knows how to invoke the compiled tool (`purs
       # compile` output already ships `package.json` `{"type":"module"}`, so
-      # no esbuild/bundling step is needed) — shared by `mkCodemodOutput`
-      # below and by the devShell command in nix/devShells.nix, rather than
-      # each hand-building the same `node -e` invocation.
+      # no esbuild/bundling step is needed) — shared, as `packages.purs-memo-cli`
+      # below, by `mkCodemodOutput` here and by the devShell in
+      # nix/devShells.nix, rather than each hand-building the same `node -e`
+      # invocation.
       purs-memo-cli = pkgs.writeShellScriptBin "purs-memo" ''
         exec ${pkgs.nodejs}/bin/node --input-type=module \
           -e 'import { main } from "${toolPs.output { }}/PursMemo.Main/index.js"; main()' \
@@ -151,7 +152,6 @@
           toolPs
           purs-nix
           mcpConfig
-          purs-memo-cli
           ;
         ps-tools = inputs.ps-tools.legacyPackages.${system};
       };
@@ -168,6 +168,7 @@
         };
         mcp-config = mcpConfig;
         purs-memo = toolPs.output { };
+        inherit purs-memo-cli;
       };
     };
 }

@@ -17,11 +17,10 @@ module PursMemo.Scope
 import Prelude
 
 import Data.Array (foldMap, nub)
-import Data.Array.NonEmpty as NEA
 import Data.Maybe (Maybe(..), maybe)
 import Data.Newtype (unwrap)
 import Data.Tuple (snd)
-import PureScript.CST.Traversal (foldMapExpr)
+import PureScript.CST.Traversal (foldMapBinder, foldMapExpr)
 import PureScript.CST.Types (Binder(..), Expr(..), Name(..), QualifiedName(..), RecordLabeled(..), Separated(..), Wrapped(..))
 
 separatedItems :: forall a. Separated a -> Array a
@@ -55,31 +54,29 @@ identsIn = nub <<< foldMapExpr
 
 -- | Every name a binder introduces, recursively. Used both for `DoBind`
 -- | binders (`history /\ setHistory <- ...`) and for record/constructor
--- | patterns nested inside them.
+-- | patterns nested inside them. Only `BinderVar`/`BinderNamed`'s own name
+-- | and record puns need a case here — `PureScript.CST.Traversal`'s generic
+-- | recursion already walks every other constructor's children (same
+-- | mechanism `identsIn` above relies on for `Expr`), and puns are the one
+-- | spot it doesn't recurse into on its own (an opaque leaf, just like the
+-- | `Expr` side).
 boundNames :: Binder Void -> Array String
-boundNames = case _ of
-  BinderVar (Name { name }) -> [ unwrap name ]
-  BinderNamed (Name { name }) _ inner -> [ unwrap name ] <> boundNames inner
-  BinderConstructor _ binders -> foldMap boundNames binders
-  BinderArray (Wrapped { value }) -> maybe []
-    (foldMap boundNames <<< separatedItems)
-    value
-  BinderRecord (Wrapped { value }) -> maybe []
-    (foldMap fieldNames <<< separatedItems)
-    value
-  BinderParens (Wrapped { value }) -> boundNames value
-  BinderTyped inner _ _ -> boundNames inner
-  BinderOp inner ops -> boundNames inner <> foldMap (boundNames <<< snd)
-    (NEA.toArray ops)
-  BinderWildcard _ -> []
-  BinderBoolean _ _ -> []
-  BinderChar _ _ -> []
-  BinderString _ _ -> []
-  BinderInt _ _ _ -> []
-  BinderNumber _ _ _ -> []
-  BinderError e -> absurd e
+boundNames = foldMapBinder
+  { onExpr: const mempty
+  , onBinder
+  , onDecl: const mempty
+  , onType: const mempty
+  }
   where
-  fieldNames :: RecordLabeled (Binder Void) -> Array String
-  fieldNames = case _ of
+  onBinder = case _ of
+    BinderVar (Name { name }) -> [ unwrap name ]
+    BinderNamed (Name { name }) _ _ -> [ unwrap name ]
+    BinderRecord (Wrapped { value }) -> maybe []
+      (foldMap punName <<< separatedItems)
+      value
+    _ -> []
+
+  punName :: RecordLabeled (Binder Void) -> Array String
+  punName = case _ of
     RecordPun (Name { name }) -> [ unwrap name ]
-    RecordField _ _ b -> boundNames b
+    RecordField _ _ _ -> []
