@@ -5,7 +5,6 @@ _: {
       pkgs,
       ps,
       purs-nix,
-      mcpConfig,
       ...
     }:
     let
@@ -22,8 +21,6 @@ _: {
         buildInputs = devPackages;
         shellHook = ''
           ${config.pre-commit.shellHook}
-          cat ${mcpConfig} > .mcp.json
-          echo "Generated .mcp.json"
         '';
       };
     };
