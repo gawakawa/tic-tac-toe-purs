@@ -553,8 +553,11 @@ topoSort graph = go { roots: startingNodes, sorted: Nil, usages: importCounts }
 
   isRoot (Tuple a count) = if count == 0 then Just a else Nothing
 
+  -- `curr` is already the head of `path` by the time it's re-visited (both
+  -- grow together, one cons per step below), so the closing edge doesn't
+  -- get a second copy of it.
   depthFirst path visited curr =
-    if Set.member curr visited then Just (curr : path)
+    if Set.member curr visited then Just path
     else if maybe true Set.isEmpty (Map.lookup curr graph) then Nothing
     else Map.lookup curr graph >>= \next ->
       foldl
