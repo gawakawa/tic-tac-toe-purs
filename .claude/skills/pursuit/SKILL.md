@@ -1,15 +1,15 @@
 ---
-name: purescript-type-search
-description: Find a PureScript function, type, or class member by its type signature instead of guessing names.
+name: pursuit
+description: Find a PureScript function, type, or class member on Pursuit. Search by type signature first — more reliable than guessing names.
 when_to_use: Whenever you need a PureScript function you cannot name, are unsure a function exists, or are about to search Pursuit by name. Triggers on "PureScript の関数を探す", "Pursuit で調べる", "does PureScript have a function that...".
 user-invocable: true
 disable-model-invocation: false
 allowed-tools: Bash
 ---
 
-# PureScript Type Search
+# Pursuit
 
-Search by type, not by name. URL-encode the query.
+Search by type first, not by name. URL-encode the query.
 
 1. Ask Pursuit for the signature you want:
 
