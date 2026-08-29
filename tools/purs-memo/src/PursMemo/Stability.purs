@@ -55,6 +55,11 @@ classifyDoBind binder rhs =
       [ Tuple state Unstable, Tuple dispatch StableDirect ]
     Just "useRef", [ ref ] -> [ Tuple ref StableDirect ]
     Just "useEffectEvent", [ fn ] -> [ Tuple fn StableDirect ]
+    -- A DoBind that is this transform's own previously-emitted output
+    -- (re-running on already-transformed code). Without this case the
+    -- result falls through to Unstable, corrupting stateNames/neverHits
+    -- on a second pass -- see PursMemo.Transform's idempotency goal.
+    Just "useMemo", [ result ] -> [ Tuple result MemoizedResult ]
     _, _ -> map (\n -> Tuple n Unstable) names
   where
   names = boundNames binder

@@ -294,6 +294,34 @@ mkNoState = component "NoState" \_ ->
     pure (R.div { children: [ thing unit ] })
 """
 
+-- The idempotency regression: `already` is shaped exactly like this
+-- tool's own previously-emitted output (as if re-running on already-
+-- transformed code). If `classifyDoBind` doesn't recognize `useMemo`
+-- (the bug this pins), `already` falls through to `Unstable` and is
+-- wrongly added to `stateNames` as phantom state -- `thing` (whose real
+-- closure is just `n`, the only actual state) then fails the
+-- never-hits-pruning subset check (`{n, already} ⊆ {n}` is false) and
+-- gets wastefully memoized instead of staying plain.
+fixtureReprocessedMemo :: String
+fixtureReprocessedMemo =
+  """module Fixture where
+
+import Prelude
+import React.Basic.DOM as R
+import React.Basic.Hooks (Component, component, useState')
+import React.Basic.Hooks as React
+import Data.Tuple.Nested ((/\))
+
+mkIdempotent :: Component Unit
+mkIdempotent = component "Idempotent" \_ ->
+  React.do
+    n /\ setN <- useState' 0
+    already <- React.useMemo (React.UnsafeReference n) \_ -> n + 1
+    let
+      thing = \_ -> R.div { children: [ R.text (show n) ] }
+    pure (R.div { children: [ thing unit ] })
+"""
+
 main :: Effect Unit
 main = runTest do
   suite "PursMemo.Transform" do
@@ -380,3 +408,11 @@ main = runTest do
           Assert.assert
             "thing is memoized (empty stateNamesSet doesn't vacuously prune it)"
             (contains "thing <- React.useMemo" out)
+
+    test
+      "a DoBind shaped like this tool's own useMemo output is classified MemoizedResult, not phantom state"
+      do
+        withTransformed "fixtureReprocessedMemo" fixtureReprocessedMemo \out ->
+          Assert.assert
+            "thing stays plain (already isn't wrongly added to stateNames)"
+            (not (contains "thing <- React.useMemo" out))
